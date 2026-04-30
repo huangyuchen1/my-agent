@@ -24,6 +24,15 @@ client = OpenAI(
 rounds_since_todo = 0
 
 
+def _format_duration(seconds: float) -> str:
+    """格式化时长显示"""
+    if seconds < 60:
+        return f"{seconds:.1f}秒"
+    minutes = int(seconds // 60)
+    secs = seconds % 60
+    return f"{minutes}分{secs:.1f}秒"
+
+
 def agent_loop(messages: List[Dict[str, Any]]) -> None:
     """
     核心 Agent 循环模式:
@@ -34,6 +43,7 @@ def agent_loop(messages: List[Dict[str, Any]]) -> None:
     """
     global rounds_since_todo
     total_rounds = 0
+    loop_start_time = time.time()
 
     while True:
         total_rounds += 1
@@ -215,6 +225,7 @@ def main():
 
         history.append({"role": "user", "content": query})
 
+        start_time = time.time()
         try:
             agent_loop(history)
         except Exception as e:
@@ -231,6 +242,8 @@ def main():
             else:
                 print(response_content)
 
+        duration = time.time() - start_time
+        print(f"\n\033[35m[耗时] 本轮对话总时长: {_format_duration(duration)}\033[0m")
         print()
 
 
