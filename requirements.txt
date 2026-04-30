@@ -1,0 +1,27 @@
+# LangChain AI Agent Dependencies
+# ================================
+
+# LangChain 核心
+langchain>=0.3.0
+langchain-core>=0.3.0
+
+# LangChain 社区集成（包含 Moonshot 支持）
+langchain-community>=0.3.0
+
+# Moonshot/Kimi LLM 集成
+# 注意：如果 langchain-moonshot 不可用，使用 langchain-community 中的集成
+langchain-moonshot>=0.1.0
+
+# Python LLM 客户端（OpenAI 兼容格式）
+openai>=1.0.0
+
+# 系统工具依赖
+psutil>=5.9.0
+
+# 异步支持
+aiohttp>=3.9.0
+asyncio-throttle>=1.0.0
+
+# 工具可选依赖
+# 使用 langchain 工具时可能需要
+langchain-experimental>=0.3.0
