@@ -1,5 +1,5 @@
 """
-AI Agent - 对接 Moonshot AI (Kimi) 大模型的对话助手
+AI Agent - 支持多模型配置的对话助手
 支持主代理 + Subagent 架构
 """
 import json
@@ -9,19 +9,33 @@ from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
+from config import init_config, get_config, get_current_model_config
 from tool_dispatcher import dispatcher
 from ui_utils import start_status, stop_status
 from exception_handler import classify_error, format_error_for_display
 from subagent import SubagentManager, SubagentType, SubagentResult
 
 
-MODEL = "kimi-k2.5"
-SYSTEM = f"You are a coding agent at {os.getcwd()}. Use bash to solve tasks. Act, don't explain."
+def get_client() -> OpenAI:
+    """获取 OpenAI 客户端（根据当前配置）"""
+    config = get_config()
+    model_config = config.current_model_config
+    return OpenAI(
+        api_key=model_config.api_key,
+        base_url=model_config.base_url
+    )
 
-client = OpenAI(
-    api_key=os.environ.get("MOONSHOT_API_KEY", "sk-0cJM2iDt54p4AA4qUSZCHH57mpyDNx8Gq6VkBojyN7JqEklG"),
-    base_url="https://api.moonshot.cn/v1"
-)
+
+def get_system_prompt() -> str:
+    """获取系统提示词"""
+    config = get_config()
+    model_config = config.current_model_config
+    # 替换模板变量
+    prompt = model_config.system_prompt
+    if "{cwd}" in prompt:
+        prompt = prompt.replace("{cwd}", os.getcwd())
+    return prompt
+
 
 # 全局状态
 rounds_since_todo = 0
@@ -32,7 +46,7 @@ def get_subagent_manager() -> SubagentManager:
     """获取或创建子代理管理器"""
     global subagent_manager
     if subagent_manager is None:
-        subagent_manager = SubagentManager(client)
+        subagent_manager = SubagentManager(get_client())
     return subagent_manager
 
 
@@ -72,13 +86,17 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
             thinking_msg = "正在思考你的问题..."
         start_status(thinking_msg)
 
+        model_config = get_current_model_config()
         request_params = {
-            "model": MODEL,
+            "model": model_config.model_id,
             "messages": messages,
             "tools": dispatcher.get_all_tools(),
-            "max_tokens": 32768,
-            "extra_body": {"thinking": {"type": "disabled"}},
+            "max_tokens": model_config.max_tokens,
         }
+
+        # 添加 thinking 配置（如果模型支持）
+        if model_config.thinking_type:
+            request_params["extra_body"] = {"thinking": {"type": model_config.thinking_type}}
 
         completion = _call_model_with_retry(request_params, thinking_msg)
         if completion is None:
@@ -171,10 +189,11 @@ def _handle_spawn_subagent(args: Dict[str, Any]) -> str:
     except ValueError:
         subagent_type = SubagentType.GENERAL
 
-    # 获取当前工具列表
-    tools = dispatcher.get_all_tools()
+    # 获取工具列表，但过滤掉 spawn_subagent 防止子代理创建孙代理
+    all_tools = dispatcher.get_all_tools()
+    tools = [t for t in all_tools if t.get("function", {}).get("name") != "spawn_subagent"]
 
-    # 创建子代理
+    # 创建子代理（不包含 spawn_subagent 工具）
     agent_id = manager.create_subagent(
         name=name,
         subagent_type=subagent_type,
@@ -234,6 +253,7 @@ def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
 
     for attempt in range(MAX_RETRIES):
         try:
+            client = get_client()
             completion = client.chat.completions.create(**request_params)
             stop_status(success=True, final_msg="思考完成 ✓")
             return completion
@@ -327,8 +347,15 @@ def _append_tool_results(messages: List[Dict[str, Any]], tool_calls, results) ->
 
 def main():
     """主函数 - 命令行交互界面"""
+    # 初始化配置
+    config = init_config()
+
+    model_name = config.current_model_config.name
+    model_id = config.current_model_config.model_id
+
     print("=" * 60)
-    print("        AI Agent - Kimi 对话助手 (Subagent版)")
+    print("        AI Agent - 多模型对话助手")
+    print(f"        当前模型: {model_name} ({model_id})")
     print("=" * 60)
     print("\n功能:")
     print("  - 基础工具: ls, git, python, 文件读写等")
@@ -340,11 +367,13 @@ def main():
     print("  - review: 代码审查")
     print("\n提示:")
     print("  - 输入 'q' 或 'quit' 退出")
-    print("  - 输入 'agents' 查看活跃子代理\n")
+    print("  - 输入 'agents' 查看活跃子代理")
+    print("  - 输入 'models' 查看可用模型")
+    print("  - 输入 'switch <model>' 切换模型\n")
 
     history = [{
         "role": "system",
-        "content": SYSTEM
+        "content": get_system_prompt()
     }]
 
     manager = get_subagent_manager()
@@ -367,6 +396,35 @@ def main():
             else:
                 print("\n[无活跃子代理]")
             print()
+            continue
+
+        if query.strip().lower() == "models":
+            print("\n[可用模型]")
+            for name in config.available_models:
+                current = " (当前)" if name == config.current_model_config.name else ""
+                print(f"  - {name}{current}")
+            print()
+            continue
+
+        if query.strip().lower().startswith("switch "):
+            target_model = query.strip()[7:].strip()
+            if config.set_model(target_model):
+                # 重置子代理管理器以使用新配置
+                global subagent_manager
+                subagent_manager = None
+                # 重新获取 manager 以使用新配置
+                manager = get_subagent_manager()
+                # 更新系统提示词
+                history = [{
+                    "role": "system",
+                    "content": get_system_prompt()
+                }]
+                model_name = config.current_model_config.name
+                model_id = config.current_model_config.model_id
+                print(f"\n\033[32m[切换] 已切换到模型: {model_name} ({model_id})\033[0m\n")
+            else:
+                print(f"\n\033[31m[错误] 未知的模型: {target_model}\033[0m")
+                print(f"可用模型: {', '.join(config.available_models)}\n")
             continue
 
         history.append({"role": "user", "content": query})
