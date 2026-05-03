@@ -7,6 +7,40 @@ TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
+            "name": "spawn_subagent",
+            "description": "创建并运行子代理来执行专门任务。当任务需要独立的执行上下文、专门的工具集或并行处理时使用。适用于代码探索、深度研究、代码审查等场景。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "子代理的名称，用于标识和追踪"
+                    },
+                    "type": {
+                        "type": "string",
+                        "enum": ["explore", "execute", "research", "review", "general"],
+                        "description": "子代理类型: explore(代码探索), execute(任务执行), research(深度研究), review(代码审查), general(通用)"
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "子代理要执行的具体任务描述"
+                    },
+                    "max_rounds": {
+                        "type": "integer",
+                        "description": "子代理最大执行轮次，默认10"
+                    },
+                    "parent_context": {
+                        "type": "object",
+                        "description": "传递给子代理的父上下文信息，可选"
+                    }
+                },
+                "required": ["name", "type", "task"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "todo",
             "description": "更新待办事项列表。用于管理多步骤任务的状态，包括 pending（待处理）、in_progress（进行中）、completed（已完成）。每次更新会渲染当前所有事项的状态。",
             "parameters": {
