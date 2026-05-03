@@ -11,6 +11,7 @@ from openai import OpenAI
 
 from tool_dispatcher import dispatcher
 from ui_utils import start_status, stop_status
+from exception_handler import classify_error, format_error_for_display
 
 
 MODEL = "kimi-k2.5"
@@ -105,7 +106,7 @@ def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
     """调用模型，支持限流重试"""
     global rounds_since_todo
     MAX_RETRIES = 3
-    RETRY_DELAY = 2.0
+    BASE_DELAY = 2.0
 
     for attempt in range(MAX_RETRIES):
         try:
@@ -113,17 +114,18 @@ def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
             stop_status(success=True, final_msg="思考完成 ✓")
             return completion
         except Exception as e:
-            error_str = str(e)
-            is_rate_limit = "429" in error_str or "overloaded" in error_str.lower()
-            if is_rate_limit and attempt < MAX_RETRIES - 1:
+            category, user_msg, can_retry, status_code = classify_error(e)
+            
+            if can_retry and attempt < MAX_RETRIES - 1:
+                delay = BASE_DELAY * (1.5 ** attempt)
                 stop_status(success=False, final_msg="")
-                print(f"\n\033[33m[限流] 请求过于频繁，{RETRY_DELAY:.1f}秒后重试... ({attempt + 1}/{MAX_RETRIES})\033[0m")
-                time.sleep(RETRY_DELAY)
-                RETRY_DELAY *= 1.5
+                print(f"\n\033[33m[限流] {user_msg}，{delay:.1f}秒后重试... ({attempt + 1}/{MAX_RETRIES})\033[0m")
+                time.sleep(delay)
                 start_status(thinking_msg)
             else:
                 stop_status(success=False, final_msg="")
-                print(f"\n\033[31m[API错误] {e}\033[0m")
+                error_display = format_error_for_display(e)
+                print(f"\n\033[31m[API错误] {error_display}\033[0m")
                 return None
 
 
@@ -229,7 +231,8 @@ def main():
         try:
             agent_loop(history)
         except Exception as e:
-            print(f"\n\033[31m[错误] {e}\033[0m")
+            error_display = format_error_for_display(e, show_technical=True)
+            print(f"\n\033[31m[错误] {error_display}\033[0m")
             continue
 
         response_content = history[-1]["content"]
