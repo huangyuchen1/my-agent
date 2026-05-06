@@ -199,5 +199,22 @@ TOOLS_DEFINITION = [
                 "properties": {}
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_skill",
+            "description": "按需加载指定 Skill 的完整内容。当需要特定领域的工作流、约定或最佳实践时使用（如 git 工作流、代码审查清单、测试模式等）。返回 <skill name=\"xxx\">...</skill> 格式的内容。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "要加载的 Skill 名称（如 git, code-review, test 等）"
+                    }
+                },
+                "required": ["name"]
+            }
+        }
     }
 ]
