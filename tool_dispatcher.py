@@ -8,6 +8,7 @@ from typing import Any, Dict
 from tool_definitions import TOOLS_DEFINITION
 from todo_manager import TODO
 from console_tools import ConsoleTools
+from skill_loader import SkillLoader
 
 
 class ToolDispatcher:
@@ -15,6 +16,7 @@ class ToolDispatcher:
 
     def __init__(self, workspace_path: str = "."):
         self.console_tools = ConsoleTools(workspace_path)
+        self.skill_loader = SkillLoader()
         self._handlers = {
             "bash": self.console_tools.bash,
             "read_file": self.console_tools.read_file,
@@ -25,7 +27,13 @@ class ToolDispatcher:
             "kill_process": self.console_tools.kill_process,
             "get_system_info": self.console_tools.get_system_info,
             "todo": self._handle_todo,
+            "load_skill": self._handle_load_skill,
         }
+
+    def _handle_load_skill(self, arguments: Dict[str, Any]) -> str:
+        """处理 Skill 加载工具"""
+        name = arguments.get("name", "")
+        return self.skill_loader.get_content(name)
 
     def _handle_todo(self, arguments: Dict[str, Any]) -> str:
         """处理待办事项工具"""

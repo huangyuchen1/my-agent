@@ -14,6 +14,7 @@ from tool_dispatcher import dispatcher
 from ui_utils import start_status, stop_status
 from exception_handler import classify_error, format_error_for_display
 from subagent import SubagentManager, SubagentType, SubagentResult
+from skill_loader import get_skill_loader
 
 
 def get_client() -> OpenAI:
@@ -30,10 +31,15 @@ def get_system_prompt() -> str:
     """获取系统提示词"""
     config = get_config()
     model_config = config.current_model_config
-    # 替换模板变量
     prompt = model_config.system_prompt
     if "{cwd}" in prompt:
         prompt = prompt.replace("{cwd}", os.getcwd())
+    
+    skill_loader = get_skill_loader()
+    skill_descriptions = skill_loader.get_descriptions()
+    if skill_descriptions:
+        prompt += "\n\nAvailable Skills:\n" + skill_descriptions
+    
     return prompt
 
 
@@ -73,8 +79,6 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
     """
     global rounds_since_todo
     total_rounds = 0
-    loop_start_time = time.time()
-
     while True:
         total_rounds += 1
 
