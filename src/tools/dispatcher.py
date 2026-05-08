@@ -9,6 +9,7 @@ from src.tools.definitions import TOOLS_DEFINITION
 from src.tools.task_manager import TASKS
 from src.tools.console import ConsoleTools
 from src.core.skill_loader import SkillLoader
+from src.core.config import get_current_model_config
 from src.context.compactor import (
     check_and_compact,
     manual_compact,
@@ -129,9 +130,11 @@ class ToolDispatcher:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def get_all_tools(self) -> list:
-        """获取所有可用工具定义（包括内置搜索工具）"""
-        builtin_tools = [{"type": "builtin_function", "function": {"name": "$web_search"}}]
-        return builtin_tools + TOOLS_DEFINITION
+        """获取所有可用工具定义（根据当前模型配置决定是否包含联网搜索工具）"""
+        tools = list(TOOLS_DEFINITION)
+        if get_current_model_config().enable_web_search:
+            tools.insert(0, {"type": "builtin_function", "function": {"name": "$web_search"}})
+        return tools
 
 
 # 全局单例
