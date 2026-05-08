@@ -11,6 +11,8 @@ from src.tools.console import ConsoleTools
 from src.core.skill_loader import SkillLoader
 from src.core.config import get_current_model_config
 from src.core.background_manager import BG
+from src.subagent.message_bus import BUS
+from src.subagent.teammate_manager import TM
 from src.context.compactor import (
     check_and_compact,
     manual_compact,
@@ -45,6 +47,11 @@ class ToolDispatcher:
             "task_get": self._handle_task_get,
             "background_run": self._handle_background_run,
             "background_status": self._handle_background_status,
+            "team_spawn": self._handle_team_spawn,
+            "team_send": self._handle_team_send,
+            "team_inbox": self._handle_team_inbox,
+            "team_list": self._handle_team_list,
+            "team_shutdown": self._handle_team_shutdown,
         }
 
     def set_compact_client(self, client) -> None:
@@ -86,6 +93,61 @@ class ToolDispatcher:
             return json.dumps({"success": True, "task": status}, ensure_ascii=False)
 
         return json.dumps({"error": "task_id or list_all is required"}, ensure_ascii=False)
+
+    def _handle_team_spawn(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_spawn 工具 - 创建持久化队友"""
+        name = arguments.get("name", "")
+        role = arguments.get("role", "")
+        if not name or not role:
+            return json.dumps({"error": "name and role are required"}, ensure_ascii=False)
+        prompt = arguments.get("prompt")
+        max_rounds = arguments.get("max_rounds", 50)
+        result = TM.spawn(name=name, role=role, prompt=prompt, max_rounds=max_rounds)
+        return json.dumps({"success": True, "message": result})
+
+    def _handle_team_send(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_send 工具 - 向队友发送消息"""
+        to = arguments.get("to", "")
+        content = arguments.get("content", "")
+        broadcast = arguments.get("broadcast", False)
+        if not content:
+            return json.dumps({"error": "content is required"}, ensure_ascii=False)
+        if broadcast:
+            members = [m["name"] for m in TM.list_members()]
+            result = BUS.broadcast("lead", content, members)
+        elif to:
+            targets = [t.strip() for t in to.split(",")]
+            results = []
+            for target in targets:
+                if target:
+                    results.append(BUS.send("lead", target, content))
+            result = "\n".join(results) if results else "No recipients specified"
+        else:
+            result = "No recipients specified"
+        return json.dumps({"success": True, "message": result})
+
+    def _handle_team_inbox(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_inbox 工具 - 读取收件箱"""
+        member = arguments.get("member", "lead")
+        count_only = arguments.get("count_only", False)
+        if count_only:
+            count = BUS.get_inbox_count(member)
+            return json.dumps({"member": member, "unread": count})
+        inbox = BUS.read_inbox(member)
+        return inbox
+
+    def _handle_team_list(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_list 工具 - 列出所有队友"""
+        members = TM.list_members()
+        return json.dumps({"members": members, "count": len(members)}, ensure_ascii=False)
+
+    def _handle_team_shutdown(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_shutdown 工具 - 关闭队友"""
+        name = arguments.get("name", "")
+        if not name:
+            return json.dumps({"error": "name is required"}, ensure_ascii=False)
+        result = TM.shutdown(name)
+        return json.dumps({"success": True, "message": result})
 
     def _handle_load_skill(self, arguments: Dict[str, Any]) -> str:
         """处理 Skill 加载工具"""

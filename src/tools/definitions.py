@@ -7,22 +7,69 @@ TOOLS_DEFINITION = [
     {
         "type": "function",
         "function": {
-            "name": "spawn_subagent",
-            "description": "创建并运行子代理来执行专门任务。当任务需要独立的执行上下文、专门的工具集或并行处理时使用。适用于代码探索、深度研究、代码审查等场景。",
+            "name": "team_spawn",
+            "description": "在团队中创建一个新的持久化队友。队友会在独立线程中运行，拥有自己的 agent_loop 和收件箱，可以跨多轮对话保持记忆。与队友通信使用 team_send。适用于需要并行处理、相互协作的复杂任务。",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string", "description": "子代理的名称，用于标识和追踪"},
-                    "type": {
-                        "type": "string",
-                        "enum": ["explore", "execute", "research", "review", "general"],
-                        "description": "子代理类型: explore(代码探索), execute(任务执行), research(深度研究), review(代码审查), general(通用)"
-                    },
-                    "task": {"type": "string", "description": "子代理要执行的具体任务描述"},
-                    "max_rounds": {"type": "integer", "description": "子代理最大执行轮次，默认10"},
-                    "parent_context": {"type": "object", "description": "传递给子代理的父上下文信息，可选"}
+                    "name": {"type": "string", "description": "队友名称（唯一标识）"},
+                    "role": {"type": "string", "description": "队友角色描述，如 coder、tester、researcher"},
+                    "prompt": {"type": "string", "description": "可选的自定义系统提示词"},
+                    "max_rounds": {"type": "integer", "description": "最大执行轮次，默认50"}
                 },
-                "required": ["name", "type", "task"]
+                "required": ["name", "role"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_send",
+            "description": "向指定队友发送消息。消息会追加到队友的收件箱，队友在下一轮 loop 开始时会读取并响应。支持发送给一个或多个队友（逗号分隔）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "接收消息的队友名称（多个用逗号分隔）"},
+                    "content": {"type": "string", "description": "消息内容"},
+                    "broadcast": {"type": "boolean", "description": "是否为广播消息（发给所有队友）"}
+                },
+                "required": ["to", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_inbox",
+            "description": "读取并清空自己的收件箱，或者查询指定队友的收件箱状态。返回所有未读消息。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "member": {"type": "string", "description": "可选，指定要查询的队友名称，不填则读取自己的收件箱"},
+                    "count_only": {"type": "boolean", "description": "如果为 true，仅返回未读消息数量"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_list",
+            "description": "列出团队中所有队友的状态（working / idle / shutdown）。",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_shutdown",
+            "description": "关闭指定队友，释放其资源。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "要关闭的队友名称"}
+                },
+                "required": ["name"]
             }
         }
     },
