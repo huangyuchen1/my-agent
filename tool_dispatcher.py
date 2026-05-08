@@ -9,6 +9,13 @@ from tool_definitions import TOOLS_DEFINITION
 from todo_manager import TODO
 from console_tools import ConsoleTools
 from skill_loader import SkillLoader
+from context_compactor import (
+    check_and_compact,
+    manual_compact,
+    get_context_stats,
+    estimate_tokens,
+    AUTO_COMPACT_TOKEN_THRESHOLD,
+)
 
 
 class ToolDispatcher:
@@ -17,6 +24,7 @@ class ToolDispatcher:
     def __init__(self, workspace_path: str = "."):
         self.console_tools = ConsoleTools(workspace_path)
         self.skill_loader = SkillLoader()
+        self._compact_client = None  # LLM client for summarization, set via set_compact_client
         self._handlers = {
             "bash": self.console_tools.bash,
             "read_file": self.console_tools.read_file,
@@ -28,7 +36,13 @@ class ToolDispatcher:
             "get_system_info": self.console_tools.get_system_info,
             "todo": self._handle_todo,
             "load_skill": self._handle_load_skill,
+            "compact": self._handle_compact,
+            "context_stats": self._handle_context_stats,
         }
+
+    def set_compact_client(self, client) -> None:
+        """设置用于摘要生成的 LLM client"""
+        self._compact_client = client
 
     def _handle_load_skill(self, arguments: Dict[str, Any]) -> str:
         """处理 Skill 加载工具"""
@@ -46,6 +60,19 @@ class ToolDispatcher:
             }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    def _handle_compact(self, arguments: Dict[str, Any]) -> str:
+        """处理手动压缩工具 - 返回压缩结果信息，实际压缩在 agent_loop 中执行"""
+        instruction = arguments.get("instruction", None)
+        return json.dumps({
+            "ready": True,
+            "instruction": instruction,
+            "message": "compact tool called — agent_loop will execute the actual compression",
+        }, ensure_ascii=False)
+
+    def _handle_context_stats(self, arguments: Dict[str, Any]) -> str:
+        """处理上下文统计工具"""
+        return json.dumps({"error": "context_stats must be called from agent context"}, ensure_ascii=False)
 
     def run_tool(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         """

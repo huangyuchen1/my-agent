@@ -216,5 +216,33 @@ TOOLS_DEFINITION = [
                 "required": ["name"]
             }
         }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compact",
+            "description": "手动压缩当前对话上下文。当上下文变长导致模型响应变慢或质量下降时使用。此工具会保存完整对话历史到磁盘，调用 LLM 生成摘要，然后将压缩后的摘要替换当前上下文。压缩后的完整记录保存在 .context/transcripts/ 目录中。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instruction": {
+                        "type": "string",
+                        "description": "可选的压缩指导，说明本次对话的重点任务和方向，帮助 LLM 生成更有针对性的摘要。例如：'重点保留代码修改的决策过程和文件路径'"
+                    }
+                },
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "context_stats",
+            "description": "获取当前对话上下文的统计信息，包括估算 token 数量、消息数量、压缩状态、以及已保存的 transcript 文件列表。用于判断是否需要手动触发压缩。",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
     }
 ]

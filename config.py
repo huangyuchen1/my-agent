@@ -53,18 +53,11 @@ class Config:
         """加载配置文件"""
         config_path = self._get_config_path()
 
-        if not config_path.exists():
-            self._create_default_config(config_path)
-            print(f"\033[33m[配置] 配置文件不存在，已创建默认配置: {config_path}\033[0m")
-
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
             print(f"\033[31m[错误] 配置文件格式错误: {e}\033[0m")
-            self._create_default_config(config_path)
-            with open(config_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
 
         # 加载所有模型配置
         models_data = data.get("models", {})
