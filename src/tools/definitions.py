@@ -88,11 +88,43 @@ TOOLS_DEFINITION = [
         "type": "function",
         "function": {
             "name": "bash",
-            "description": "执行 Shell/PowerShell 命令。用于运行系统命令、程序、脚本等。返回命令的 stdout、stderr 和退出码。",
+            "description": "执行 Shell/PowerShell 命令。用于运行系统命令、程序、脚本等。返回命令的 stdout、stderr 和退出码。对于耗时长且可并行的任务（如 npm install、pytest），可设置 background=true 将命令放入后台执行，Agent 可以继续其他工作。",
             "parameters": {
                 "type": "object",
-                "properties": {"command": {"type": "string", "description": "要执行的命令（PowerShell on Windows, Bash on Mac/Linux）"}},
+                "properties": {
+                    "command": {"type": "string", "description": "要执行的命令（PowerShell on Windows, Bash on Mac/Linux）"},
+                    "background": {"type": "boolean", "description": "是否在后台执行（不阻塞 Agent，可并行处理其他任务）。适用于耗时操作。默认 false。"}
+                },
                 "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "background_run",
+            "description": "在后台启动一个耗时的 shell 命令，立即返回 task_id。Agent 可以继续执行其他工作。当命令完成时，结果会自动注入下一轮 LLM 上下文。适用于 npm install、docker build、pytest 等耗时操作。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "要执行的命令（PowerShell on Windows, Bash on Mac/Linux）"},
+                    "timeout": {"type": "integer", "description": "超时时间（秒），默认300秒，最大600秒"}
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "background_status",
+            "description": "查询后台任务的状态。如果任务已完成，返回完整结果；如果仍在运行，返回当前状态。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "任务 ID（background_run 返回的 task_id）"},
+                    "list_all": {"type": "boolean", "description": "如果为 true，列出所有后台任务状态"}
+                }
             }
         }
     },
