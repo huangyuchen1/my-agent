@@ -15,6 +15,15 @@ from ui_utils import start_status, stop_status
 from exception_handler import classify_error, format_error_for_display
 from subagent import SubagentManager, SubagentType, SubagentResult
 from skill_loader import get_skill_loader
+from context_compactor import (
+    micro_compact,
+    check_and_compact,
+    manual_compact,
+    get_context_stats,
+    estimate_tokens,
+    AUTO_COMPACT_TOKEN_THRESHOLD,
+    cleanup_old_transcripts,
+)
 
 
 def get_client() -> OpenAI:
@@ -46,6 +55,8 @@ def get_system_prompt() -> str:
 # 全局状态
 rounds_since_todo = 0
 subagent_manager: Optional[SubagentManager] = None
+# Layer 3 挂起: compact 工具调用后，在本轮结束时执行压缩
+_pending_compact_instruction: Optional[str] = None
 
 
 def get_subagent_manager() -> SubagentManager:
@@ -73,14 +84,46 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
         execute tools
         append results
 
+    三层上下文压缩:
+    - Layer 1 (micro_compact):   静默执行，每轮开始前将旧 tool_result 替换为占位符
+    - Layer 2 (auto_compact):    token 超过阈值时自动触发，保存完整对话并摘要
+    - Layer 3 (manual_compact):  compact 工具调用后触发，同 auto_compact 但由用户主动触发
+
     Args:
         messages: 消息历史
         use_subagent: 是否启用子代理功能
     """
-    global rounds_since_todo
+    global rounds_since_todo, _pending_compact_instruction
     total_rounds = 0
+    # 清理过老的 transcripts（每次会话最多清理一次）
+    cleanup_done = False
+
     while True:
         total_rounds += 1
+
+        if not cleanup_done:
+            removed = cleanup_old_transcripts()
+            if removed > 0:
+                print(f"\n\033[33m[ContextCompactor] 清理了 {removed} 个过老的 transcript 文件\033[0m")
+            cleanup_done = True
+
+        # Layer 1: micro_compact — 静默执行，替换旧 tool_result 为占位符
+        compacted_count = micro_compact(messages)
+        if compacted_count > 0:
+            print(f"\n\033[33m[Layer-1 micro_compact] 已将 {compacted_count} 个旧 tool_result 压缩为占位符\033[0m")
+
+        # Layer 2: auto_compact — token 超过阈值时自动压缩
+        if total_rounds == 1:  # 只在第一轮检查，避免重复压缩
+            compact_result = check_and_compact(messages, client=get_client(), system_prompt=get_system_prompt())
+            if compact_result.get("compacted"):
+                messages[:] = compact_result["compressed_messages"]
+                stats = get_context_stats(messages)
+                print(
+                    f"\n\033[35m[Layer-2 auto_compact] 上下文已自动压缩 "
+                    f"(原 ~{compact_result['original_tokens']} token → 摘要 ~{compact_result['summary_tokens']} token)\033[0m"
+                )
+                print(f"\033[35m[Layer-2] 完整记录: {compact_result['transcript_path']}\033[0m")
+                print(f"\033[35m[Layer-2] 当前上下文: ~{stats['estimated_tokens']} token\033[0m")
 
         if rounds_since_todo >= 3 and messages:
             _inject_todo_reminder(messages)
@@ -118,7 +161,7 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
 
         # 检查是否有子代理调用
         if use_subagent:
-            results = _execute_with_subagent_support(choice.message.tool_calls)
+            results = _execute_with_subagent_support(choice.message.tool_calls, messages)
         else:
             results = _execute_tool_calls(choice.message.tool_calls)
 
@@ -126,20 +169,68 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
 
         _append_tool_results(messages, choice.message.tool_calls, results)
 
+        # Layer 3: 执行挂起的手动压缩（compact 工具被调用）
+        if _pending_compact_instruction is not None or any(
+            tc.function.name == "compact" for tc in choice.message.tool_calls
+        ):
+            instruction = _pending_compact_instruction
+            _pending_compact_instruction = None
+            compact_result = manual_compact(
+                messages,
+                client=get_client(),
+                system_prompt=get_system_prompt(),
+                instruction=instruction,
+            )
+            messages[:] = compact_result["compressed_messages"]
+            stats = get_context_stats(messages)
+            print(
+                f"\n\033[35m[Layer-3 manual_compact] 上下文已压缩 "
+                f"(原 ~{compact_result['original_tokens']} token → 摘要 ~{compact_result['summary_tokens']} token)\033[0m"
+            )
+            print(f"\033[35m[Layer-3] 完整记录: {compact_result['transcript_path']}\033[0m")
+            print(f"\033[35m[Layer-3] 当前上下文: ~{stats['estimated_tokens']} token\033[0m")
+            print("\033[36m压缩完成，Agent 将在下一轮使用压缩后的上下文继续工作\033[0m")
 
-def _execute_with_subagent_support(tool_calls) -> List[Dict[str, Any]]:
+
+def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     执行工具调用，支持子代理能力
     当检测到 spawn_subagent 工具调用时，创建并运行子代理
     """
-    global rounds_since_todo
+    global rounds_since_todo, _pending_compact_instruction
     results = []
 
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
         tool_args = json.loads(tool_call.function.arguments)
 
+        # Layer 3 挂起: 检测到 compact 工具调用，记录指令但不立即执行
+        if tool_name == "compact":
+            _pending_compact_instruction = tool_args.get("instruction")
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call.id,
+                "content": json.dumps({"status": "compact queued", "instruction": _pending_compact_instruction}, ensure_ascii=False),
+            })
+            print(f"\n\033[33m$ compact(instruction={_pending_compact_instruction})\033[0m")
+            print("压缩已加入队列，将在当前轮次结束后执行...")
+            rounds_since_todo += 1
+            continue
+
         print(f"\n\033[33m$ {tool_name}({json.dumps(tool_args)[:100]}...)\033[0m")
+
+        # Layer 3 挂起: context_stats 工具
+        if tool_name == "context_stats":
+            stats = get_context_stats(messages)
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call.id,
+                "content": json.dumps(stats, ensure_ascii=False, indent=2),
+            })
+            print(f"\n\033[33m$ context_stats()\033[0m")
+            print(json.dumps(stats, ensure_ascii=False, indent=2))
+            rounds_since_todo += 1
+            continue
 
         # 处理 spawn_subagent 工具
         if tool_name == "spawn_subagent":
@@ -379,6 +470,9 @@ def main():
         "role": "system",
         "content": get_system_prompt()
     }]
+
+    # 设置 dispatcher 的 LLM client 用于摘要生成（Layer 2/3）
+    dispatcher.set_compact_client(get_client())
 
     manager = get_subagent_manager()
 
