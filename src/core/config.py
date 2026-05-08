@@ -20,6 +20,7 @@ class ModelConfig:
     thinking_type: str = "disabled"    # 思考类型
     system_prompt: str = ""            # 系统提示词模板
     extra_params: Dict[str, Any] = field(default_factory=dict)  # 其他额外参数
+    enable_web_search: bool = True  # 是否向大模型暴露联网搜索工具
 
 
 class Config:
@@ -62,6 +63,7 @@ class Config:
                 thinking_type=model_data.get("thinking_type", "disabled"),
                 system_prompt=model_data.get("system_prompt", ""),
                 extra_params=model_data.get("extra_params", {}),
+                enable_web_search=model_data.get("enable_web_search", True),
             )
 
         self._current_model = data.get("current_model")
@@ -103,6 +105,7 @@ class Config:
                 "thinking_type": config.thinking_type,
                 "system_prompt": config.system_prompt,
                 "extra_params": config.extra_params,
+                "enable_web_search": config.enable_web_search,
             }
         data = {"current_model": self._current_model, "models": models_data}
         with open(config_path, "w", encoding="utf-8") as f:

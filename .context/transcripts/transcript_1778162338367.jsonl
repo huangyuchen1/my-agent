@@ -1,8 +1,0 @@
-{"role": "system", "content": "You are a coding agent\n\nAvailable Skills:\n  - code-review: Code review checklist and best practices\n  - git: Git workflow helpers - commit conventions, branching strategy, PR guidelines\n  - test: Testing best practices - unit tests, integration tests, TDD workflow"}
-{"role": "user", "content": "你好呀"}
-{"role": "assistant", "content": "你好！很高兴见到你 😊\n\n有什么我可以帮助你的吗？无论是：\n\n- **代码开发** - 编写、调试、重构代码\n- **项目探索** - 分析代码库结构、理解项目\n- **代码审查** - 检查代码质量、提供改进建议\n- **Git 操作** - 分支管理、提交规范、PR 流程\n- **测试相关** - 单元测试、集成测试、TDD\n- **系统管理** - 文件操作、进程管理、系统信息\n\n或者其他任何技术问题，都可以告诉我！"}
-{"role": "user", "content": "Use the compact tool to manually compress the conversation"}
-{"role": "assistant", "content": "", "tool_calls": [{"id": "context_stats:0", "type": "function", "function": {"name": "context_stats", "arguments": "{}"}}]}
-{"role": "tool", "tool_call_id": "context_stats:0", "content": "{\n  \"estimated_tokens\": 190,\n  \"message_count\": 5,\n  \"tool_result_count\": 0,\n  \"compacted_messages\": 0,\n  \"threshold\": 60000,\n  \"over_threshold\": false,\n  \"transcripts\": []\n}"}
-{"role": "assistant", "content": "", "tool_calls": [{"id": "compact:1", "type": "function", "function": {"name": "compact", "arguments": "{}"}}]}
-{"role": "tool", "tool_call_id": "compact:1", "content": "{\"status\": \"compact queued\", \"instruction\": null}"}
