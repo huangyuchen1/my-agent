@@ -13,10 +13,10 @@ from src.core.config import init_config, get_config, get_current_model_config
 from src.tools.dispatcher import dispatcher
 from src.ui.spinner import start_status, stop_status
 from src.core.exception_handler import classify_error, format_error_for_display
-from src.subagent.base import SubagentType, SubagentResult
-from src.subagent.manager import SubagentManager
 from src.core.skill_loader import get_skill_loader
 from src.core.background_manager import BG
+from src.subagent.message_bus import BUS
+from src.subagent.teammate_manager import TM
 from src.context.compactor import (
     micro_compact,
     check_and_compact,
@@ -55,16 +55,7 @@ def get_system_prompt() -> str:
 
 
 # 全局状态
-subagent_manager: Optional[SubagentManager] = None
 _pending_compact_instruction: Optional[str] = None
-
-
-def get_subagent_manager() -> SubagentManager:
-    """获取或创建子代理管理器"""
-    global subagent_manager
-    if subagent_manager is None:
-        subagent_manager = SubagentManager(get_client())
-    return subagent_manager
 
 
 def _format_duration(seconds: float) -> str:
@@ -114,6 +105,17 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
                 "content": f"<background-results>\n{notif_text}\n</background-results>"
             })
             print(f"\n\033[32m[后台任务] {len(notifs)} 个任务已完成，已注入通知\033[0m")
+        # ==================================
+
+        # === 新增：检查队友收件箱 ===
+        inbox = BUS.read_inbox("lead")
+        if inbox != "[]":
+            messages.append({
+                "role": "user",
+                "content": f"<inbox>\n{inbox}\n</inbox>"
+            })
+            count = BUS.get_inbox_count("lead")
+            print(f"\n\033[32m[Team] 收到 {count} 条队友消息\033[0m")
         # ==================================
 
         if not cleanup_done:
@@ -232,7 +234,7 @@ def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -
             continue
 
         if tool_name == "spawn_subagent":
-            output = _handle_spawn_subagent(tool_args)
+            output = json.dumps({"error": "spawn_subagent 已废弃，请使用 team_spawn"})
         elif tool_name == "$web_search":
             output = json.dumps(tool_args)
         else:
@@ -247,56 +249,6 @@ def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -
         })
 
     return results
-
-
-def _handle_spawn_subagent(args: Dict[str, Any]) -> str:
-    """处理子代理创建和执行"""
-    manager = get_subagent_manager()
-
-    name = args.get("name", f"subagent_{int(time.time())}")
-    subagent_type_str = args.get("type", "general")
-    task = args.get("task", "")
-    max_rounds = args.get("max_rounds", 10)
-    parent_context = args.get("parent_context", {})
-
-    try:
-        subagent_type = SubagentType(subagent_type_str.lower())
-    except ValueError:
-        subagent_type = SubagentType.GENERAL
-
-    all_tools = dispatcher.get_all_tools()
-    tools = [t for t in all_tools if t.get("function", {}).get("name") != "spawn_subagent"]
-
-    agent_id = manager.create_subagent(
-        name=name,
-        subagent_type=subagent_type,
-        tools=tools,
-        max_rounds=max_rounds,
-        parent_context=parent_context
-    )
-
-    print(f"\n\033[36m[Subagent] 创建子代理: {name} ({agent_id})\033[0m")
-
-    start_time = time.time()
-    result = manager.run_task(agent_id, task)
-    duration = time.time() - start_time
-
-    status = "成功" if result.success else "失败"
-    summary = {
-        "agent_id": agent_id,
-        "name": name,
-        "type": subagent_type.value,
-        "status": status,
-        "success": result.success,
-        "rounds": result.rounds,
-        "duration": _format_duration(result.duration),
-        "summary": result.summary,
-        "error": result.error
-    }
-
-    print(f"\n\033[36m[Subagent] {name} 执行完成: {status} (轮次: {result.rounds}, 耗时: {_format_duration(result.duration)})\033[0m")
-
-    return json.dumps(summary, ensure_ascii=False, indent=2)
 
 
 def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
@@ -406,21 +358,17 @@ def main():
     print("\n功能:")
     print("  - 基础工具: bash, read_file, write_file, list_dir, glob 等")
     print("  - 任务系统: task_create / task_update / task_list / task_get")
-    print("  - 子代理: spawn_subagent 工具可创建专门的子代理")
+    print("  - 后台任务: background_run / background_status")
+    print("  - Agent Team: team_spawn / team_send / team_inbox / team_list / team_shutdown")
     print("\n任务系统:")
     print("  - task_create: 创建任务，支持 blocked_by 指定前置依赖")
     print("  - task_update: 更新状态（pending -> in_progress -> completed）")
     print("  - task_list:   查看所有任务及 DAG 状态")
     print("  - task_get:    查看单个任务详情")
     print("  - 任务持久化到 storage/.tasks/，跨压缩和重启存活")
-    print("\n子代理类型:")
-    print("  - explore: 代码探索")
-    print("  - execute: 任务执行")
-    print("  - research: 深度研究")
-    print("  - review: 代码审查")
     print("\n提示:")
     print("  - 输入 'q' 或 'quit' 退出")
-    print("  - 输入 'agents' 查看活跃子代理")
+    print("  - 输入 'team' 查看团队成员状态")
     print("  - 输入 'models' 查看可用模型")
     print("  - 输入 'switch <model>' 切换模型\n")
 
@@ -431,8 +379,6 @@ def main():
 
     dispatcher.set_compact_client(get_client())
 
-    manager = get_subagent_manager()
-
     while True:
         try:
             query = input("\033[36ms01 >> \033[0m")
@@ -442,14 +388,14 @@ def main():
         if query.strip().lower() in ("q", "exit", ""):
             break
 
-        if query.strip().lower() == "agents":
-            active = manager.list_active()
-            if active:
-                print("\n[活跃子代理]")
-                for agent in active:
-                    print(f"  - {agent['id']}: {agent['name']}")
+        if query.strip().lower() == "team":
+            members = TM.list_members()
+            if members:
+                print("\n[团队成员]")
+                for m in members:
+                    print(f"  - {m['name']} ({m['role']}): {m['status']}")
             else:
-                print("\n[无活跃子代理]")
+                print("\n[无团队成员]")
             print()
             continue
 
@@ -464,9 +410,6 @@ def main():
         if query.strip().lower().startswith("switch "):
             target_model = query.strip()[7:].strip()
             if config.set_model(target_model):
-                global subagent_manager
-                subagent_manager = None
-                manager = get_subagent_manager()
                 history = [{
                     "role": "system",
                     "content": get_system_prompt()
