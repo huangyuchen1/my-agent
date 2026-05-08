@@ -2,57 +2,42 @@
 ConsoleTools - 控制台操作工具集
 提供文件操作、命令执行、进程管理等系统功能
 """
-import os
-import sys
-import subprocess
 import glob
-import psutil
 import json
+import os
+import subprocess
+import sys
 from typing import Any, Dict
+
+import psutil
 
 
 class ConsoleTools:
     """控制台工具类，提供系统操作能力"""
 
     def __init__(self, workspace_path: str = "."):
-        """
-        初始化控制台工具
+        # workspace_path 相对于项目根目录
+        self.workspace_path = os.path.abspath(self._resolve_workspace(workspace_path))
+        self.platform = sys.platform
 
-        Args:
-            workspace_path: 工作区路径，限制文件操作范围
-        """
-        self.workspace_path = os.path.abspath(workspace_path)
-        self.platform = sys.platform  # win32, darwin, linux
+    def _resolve_workspace(self, workspace_path: str) -> str:
+        """将相对路径解析为项目根目录下的绝对路径"""
+        p = os.path.abspath(workspace_path)
+        if not os.path.isabs(workspace_path):
+            # 项目根目录 = src/tools/ 的 parent.parent.parent
+            root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            p = os.path.join(root, workspace_path)
+        return p
 
     def _safe_path(self, file_path: str) -> str:
-        """
-        路径沙箱：确保路径在工作区内，防止越界访问。
-
-        Args:
-            file_path: 相对或绝对路径
-
-        Returns:
-            标准化后的绝对路径
-
-        Raises:
-            ValueError: 路径超出工作区时抛出
-        """
+        """路径沙箱：确保路径在工作区内，防止越界访问。"""
         abs_path = os.path.abspath(file_path)
         if not abs_path.startswith(self.workspace_path):
             raise ValueError(f"Access denied: path outside workspace ({self.workspace_path})")
         return abs_path
 
     def _run_command(self, command: str, timeout: int = 30) -> Dict[str, Any]:
-        """
-        执行 shell 命令的内部方法
-
-        Args:
-            command: 要执行的命令
-            timeout: 超时时间（秒）
-
-        Returns:
-            包含执行结果的字典
-        """
+        """执行 shell 命令的内部方法"""
         try:
             if self.platform == "win32":
                 shell = ["powershell", "-Command", command]
@@ -60,12 +45,8 @@ class ConsoleTools:
                 shell = ["/bin/bash", "-c", command]
 
             result = subprocess.run(
-                shell,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace"
+                shell, capture_output=True, text=True, timeout=timeout,
+                encoding="utf-8", errors="replace"
             )
 
             return {
@@ -78,29 +59,17 @@ class ConsoleTools:
             return {
                 "success": False,
                 "error": f"命令执行超时（{timeout}秒）",
-                "stdout": "",
-                "stderr": f"Timeout after {timeout} seconds",
+                "stdout": "", "stderr": f"Timeout after {timeout} seconds",
                 "returncode": -1
             }
         except Exception as e:
             return {
-                "success": False,
-                "error": str(e),
-                "stdout": "",
-                "stderr": str(e),
-                "returncode": -1
+                "success": False, "error": str(e),
+                "stdout": "", "stderr": str(e), "returncode": -1
             }
 
     def bash(self, arguments: Dict[str, Any]) -> str:
-        """
-        执行 Shell 命令
-
-        Args:
-            arguments: 包含 command 参数的字典
-
-        Returns:
-            JSON 格式的执行结果
-        """
+        """执行 Shell 命令"""
         command = arguments.get("command", "")
         if not command:
             return json.dumps({"error": "No command provided"}, ensure_ascii=False)
@@ -112,7 +81,6 @@ class ConsoleTools:
             output.append(result["stdout"])
         if result["stderr"] and result["returncode"] != 0:
             output.append(f"[stderr] {result['stderr']}")
-
         if not output:
             output = [f"[completed with exit code {result['returncode']}]"]
 
@@ -125,25 +93,15 @@ class ConsoleTools:
         }, ensure_ascii=False)
 
     def read_file(self, arguments: Dict[str, Any]) -> str:
-        """
-        读取文件内容
-
-        Args:
-            arguments: 包含 path 参数的字典
-
-        Returns:
-            JSON 格式的文件内容
-        """
+        """读取文件内容"""
         file_path = arguments.get("path", "")
         if not file_path:
             return json.dumps({"error": "No file path provided"}, ensure_ascii=False)
 
         try:
             abs_path = self._safe_path(file_path)
-
             if not os.path.exists(abs_path):
                 return json.dumps({"error": f"File not found: {file_path}"}, ensure_ascii=False)
-
             if not os.path.isfile(abs_path):
                 return json.dumps({"error": f"Not a file: {file_path}"}, ensure_ascii=False)
 
@@ -154,25 +112,14 @@ class ConsoleTools:
                 content = content[:1024 * 1024] + "\n[... 文件过大，已截断 ...]"
 
             return json.dumps({
-                "path": abs_path,
-                "content": content,
-                "size": len(content),
-                "success": True
+                "path": abs_path, "content": content,
+                "size": len(content), "success": True
             }, ensure_ascii=False)
-
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def write_file(self, arguments: Dict[str, Any]) -> str:
-        """
-        写入文件内容
-
-        Args:
-            arguments: 包含 path 和 content 参数的字典
-
-        Returns:
-            JSON 格式的操作结果
-        """
+        """写入文件内容"""
         file_path = arguments.get("path", "")
         content = arguments.get("content", "")
 
@@ -181,7 +128,6 @@ class ConsoleTools:
 
         try:
             abs_path = self._safe_path(file_path)
-
             parent_dir = os.path.dirname(abs_path)
             if parent_dir and not os.path.exists(parent_dir):
                 os.makedirs(parent_dir, exist_ok=True)
@@ -195,28 +141,17 @@ class ConsoleTools:
                 "success": True,
                 "message": f"Successfully wrote {len(content)} characters"
             }, ensure_ascii=False)
-
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def list_dir(self, arguments: Dict[str, Any]) -> str:
-        """
-        列出目录内容
-
-        Args:
-            arguments: 包含 path 参数的字典
-
-        Returns:
-            JSON 格式的目录列表
-        """
+        """列出目录内容"""
         dir_path = arguments.get("path", ".") or "."
 
         try:
             abs_path = self._safe_path(dir_path)
-
             if not os.path.exists(abs_path):
                 return json.dumps({"error": f"Path not found: {dir_path}"}, ensure_ascii=False)
-
             if not os.path.isdir(abs_path):
                 return json.dumps({"error": f"Not a directory: {dir_path}"}, ensure_ascii=False)
 
@@ -232,68 +167,39 @@ class ConsoleTools:
                         "modified": stat.st_mtime
                     })
                 except:
-                    items.append({
-                        "name": item,
-                        "type": "unknown",
-                        "size": 0,
-                        "modified": 0
-                    })
+                    items.append({"name": item, "type": "unknown", "size": 0, "modified": 0})
 
             items.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
 
             return json.dumps({
-                "path": abs_path,
-                "items": items,
-                "count": len(items),
-                "success": True
+                "path": abs_path, "items": items,
+                "count": len(items), "success": True
             }, ensure_ascii=False)
-
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def glob(self, arguments: Dict[str, Any]) -> str:
-        """
-        搜索匹配的文件
-
-        Args:
-            arguments: 包含 pattern 和 base_dir 参数的字典
-
-        Returns:
-            JSON 格式的匹配结果
-        """
+        """搜索匹配的文件"""
         pattern = arguments.get("pattern", "*")
         base_dir = arguments.get("base_dir", self.workspace_path) or self.workspace_path
 
         try:
             abs_base = self._safe_path(base_dir)
             full_pattern = os.path.join(abs_base, pattern)
-
             matches = glob.glob(full_pattern, recursive=True)
             max_results = 100
             matches = matches[:max_results]
 
             return json.dumps({
-                "pattern": pattern,
-                "base_dir": abs_base,
-                "matches": matches,
-                "count": len(matches),
-                "truncated": len(matches) >= max_results,
-                "success": True
+                "pattern": pattern, "base_dir": abs_base,
+                "matches": matches, "count": len(matches),
+                "truncated": len(matches) >= max_results, "success": True
             }, ensure_ascii=False)
-
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def get_processes(self, arguments: Dict[str, Any]) -> str:
-        """
-        获取运行中的进程列表
-
-        Args:
-            arguments: 可选包含 filter 参数的字典
-
-        Returns:
-            JSON 格式的进程列表
-        """
+        """获取运行中的进程列表"""
         filter_name = arguments.get("filter", "")
 
         try:
@@ -303,7 +209,6 @@ class ConsoleTools:
                     info = proc.info
                     if filter_name and filter_name.lower() not in info['name'].lower():
                         continue
-
                     processes.append({
                         "pid": info['pid'],
                         "name": info['name'],
@@ -315,28 +220,14 @@ class ConsoleTools:
                     pass
 
             processes.sort(key=lambda x: x["cpu"], reverse=True)
-            max_results = 50
-            processes = processes[:max_results]
-
             return json.dumps({
-                "processes": processes,
-                "count": len(processes),
-                "success": True
+                "processes": processes[:50], "count": len(processes), "success": True
             }, ensure_ascii=False)
-
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def kill_process(self, arguments: Dict[str, Any]) -> str:
-        """
-        终止指定进程
-
-        Args:
-            arguments: 包含 pid 参数的字典
-
-        Returns:
-            JSON 格式的操作结果
-        """
+        """终止指定进程"""
         pid = arguments.get("pid")
         if pid is None:
             return json.dumps({"error": "No pid provided"}, ensure_ascii=False)
@@ -345,20 +236,15 @@ class ConsoleTools:
             pid = int(pid)
             process = psutil.Process(pid)
             name = process.name()
-
             process.terminate()
             try:
                 process.wait(timeout=3)
             except psutil.TimeoutExpired:
                 process.kill()
-
             return json.dumps({
-                "pid": pid,
-                "name": name,
-                "success": True,
+                "pid": pid, "name": name, "success": True,
                 "message": f"Process {pid} ({name}) terminated"
             }, ensure_ascii=False)
-
         except psutil.NoSuchProcess:
             return json.dumps({"error": f"Process {pid} not found"}, ensure_ascii=False)
         except psutil.AccessDenied:
@@ -367,44 +253,28 @@ class ConsoleTools:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
 
     def get_system_info(self, arguments: Dict[str, Any]) -> str:
-        """
-        获取系统信息
-
-        Args:
-            arguments: 空字典
-
-        Returns:
-            JSON 格式的系统信息
-        """
+        """获取系统信息"""
         try:
             cpu_count = psutil.cpu_count(logical=True)
             cpu_physical = psutil.cpu_count(logical=False)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
 
-            info = {
+            return json.dumps({
                 "platform": sys.platform,
                 "python_version": sys.version,
                 "cpu": {
-                    "logical": cpu_count,
-                    "physical": cpu_physical,
+                    "logical": cpu_count, "physical": cpu_physical,
                     "current_percent": psutil.cpu_percent(interval=0.1)
                 },
                 "memory": {
-                    "total": memory.total,
-                    "available": memory.available,
-                    "percent": memory.percent,
-                    "used": memory.used
+                    "total": memory.total, "available": memory.available,
+                    "percent": memory.percent, "used": memory.used
                 },
                 "disk": {
-                    "total": disk.total,
-                    "used": disk.used,
-                    "free": disk.free,
-                    "percent": disk.percent
+                    "total": disk.total, "used": disk.used,
+                    "free": disk.free, "percent": disk.percent
                 }
-            }
-
-            return json.dumps(info, ensure_ascii=False)
-
+            }, ensure_ascii=False)
         except Exception as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)

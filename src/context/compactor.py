@@ -5,18 +5,17 @@ Layer 2 (auto_compact):    token 超过阈值时自动触发，保存完整对�
 Layer 3 (manual_compact):  通过 compact 工具手动触发，执行与 auto_compact 相同的摘要
 """
 import json
-import os
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from config import get_current_model_config
+from src.core.config import get_current_model_config
+from src.context.transcript import save_transcript, list_transcripts, cleanup_old_transcripts
 
 
 def _get_compact_client():
     """从 dispatcher 获取摘要用 LLM client"""
     try:
-        from tool_dispatcher import dispatcher
+        from src.tools.dispatcher import dispatcher
         return dispatcher._compact_client
     except Exception:
         return None
@@ -25,12 +24,12 @@ def _get_compact_client():
 # ======================
 # 配置常量
 # ======================
-CONTEXT_DIR = Path(".context")                    # 上下文存储目录
+CONTEXT_DIR = Path(__file__).parent.parent.parent / "storage" / ".context"
 AUTO_COMPACT_TOKEN_THRESHOLD = 50000              # 自动压缩的 token 阈值
 MICRO_COMPACT_KEEP_RECENT = 3                    # micro_compact 保留最近 N 个 tool_result
 MAX_TOOL_RESULT_PREVIEW = 120                    # tool_result 替换时的最大预览字符数
 SUMMARY_MAX_TOKENS = 3000                         # 摘要模型输出的最大 token 数
-TRANSCRIPT_MAX_SIZE_MB = 50                       # 单个 transcript 文件最大体积（MB），超过则拆分
+TRANSCRIPT_MAX_SIZE_MB = 50                       # 单个 transcript 文件最大体积（MB）
 
 
 # ======================
@@ -62,13 +61,10 @@ def micro_compact(messages: List[Dict[str, Any]]) -> int:
     for i in to_compact:
         msg = messages[i]
         content = msg.get("content", "")
-        # 提取工具名（如果消息有 name 字段）
         tool_name = msg.get("name", "tool")
-        # 生成占位符：保留前 80 字符预览 + 信息摘要
         preview = content[:80].replace("\n", " ").strip()
         truncated_content = f"[Previous: used {tool_name}] {preview}... (truncated, {len(content)} chars)"
 
-        # 对于超长内容，尝试进一步压缩
         if len(content) > 2000:
             msg["content"] = truncated_content
         else:
@@ -100,7 +96,6 @@ def estimate_tokens(messages: List[Dict[str, Any]]) -> int:
         elif isinstance(content, str):
             total += _estimate_str_tokens(content)
 
-        # tool_calls 也占 token
         if msg.get("tool_calls"):
             total += _estimate_str_tokens(json.dumps(msg["tool_calls"]))
 
@@ -127,7 +122,7 @@ def auto_compact(
     Layer 2 - 自动压缩：token 超过阈值时触发。
     Layer 3 - 手动压缩：compact 工具触发，逻辑相同。
 
-    保存完整对话到 .context/transcripts/，
+    保存完整对话到 storage/.context/transcripts/，
     然后调用 LLM 摘要，替换消息列表为摘要消息。
 
     返回: {
@@ -141,17 +136,12 @@ def auto_compact(
     original_tokens = estimate_tokens(messages)
     method = "auto"
 
-    # 1. 保存完整对话到磁盘
-    transcript_path = _save_transcript(messages)
-
-    # 2. 构建摘要请求
+    transcript_path = save_transcript(messages)
     summary_prompt = _build_summary_prompt(messages, system_prompt)
 
-    # 3. 调用 LLM 摘要（优先用传入的 client，否则从 dispatcher 获取）
     effective_client = client if client is not None else _get_compact_client()
     summary_text, summary_tokens = _summarize_with_llm(summary_prompt, effective_client)
 
-    # 4. 构建压缩后的消息列表：只保留 system + 摘要
     summary_msg = {
         "role": "user",
         "content": (
@@ -163,7 +153,7 @@ def auto_compact(
             f"Original tokens: ~{original_tokens}"
         ),
         "_context_compacted": True,
-        "_transcript_path": transcript_path,
+        "_transcript_path": str(transcript_path),
     }
 
     compressed_messages = [summary_msg]
@@ -191,8 +181,7 @@ def manual_compact(
     original_tokens = estimate_tokens(messages)
     method = "manual"
 
-    transcript_path = _save_transcript(messages)
-
+    transcript_path = save_transcript(messages)
     summary_prompt = _build_summary_prompt(messages, system_prompt, instruction=instruction)
 
     effective_client = client if client is not None else _get_compact_client()
@@ -209,7 +198,7 @@ def manual_compact(
             f"Original tokens: ~{original_tokens}"
         ),
         "_context_compacted": True,
-        "_transcript_path": transcript_path,
+        "_transcript_path": str(transcript_path),
     }
 
     return {
@@ -226,22 +215,6 @@ def manual_compact(
 # 辅助函数
 # ======================
 
-def _save_transcript(messages: List[Dict[str, Any]]) -> Path:
-    """保存完整对话到 .context/transcripts/ 目录"""
-    CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
-    transcripts_dir = CONTEXT_DIR / "transcripts"
-    transcripts_dir.mkdir(parents=True, exist_ok=True)
-
-    timestamp = int(time.time() * 1000)
-    path = transcripts_dir / f"transcript_{timestamp}.jsonl"
-
-    with open(path, "w", encoding="utf-8") as f:
-        for msg in messages:
-            f.write(json.dumps(msg, ensure_ascii=False, default=str) + "\n")
-
-    return path
-
-
 def _build_summary_prompt(
     messages: List[Dict[str, Any]],
     system_prompt: Optional[str] = None,
@@ -251,15 +224,10 @@ def _build_summary_prompt(
     构建摘要提示词。
     要求 LLM 用中文输出一个结构化的对话摘要。
     """
-    # 过滤掉已被 micro_compact 压缩过的消息的 _compacted 标记内容（但保留原始内容用于摘要）
-    # 我们使用原始内容，所以不过滤
-    pass
-
     instruction_part = (
         f"\n\n额外指导: {instruction}" if instruction else ""
     )
 
-    # 构造摘要用的消息摘要文本（不含 tool_calls 详情，减少 token 消耗）
     msg_summaries = []
     for msg in messages:
         role = msg.get("role", "?")
@@ -285,9 +253,8 @@ def _build_summary_prompt(
 
         msg_summaries.append(f"[{role}] {content}")
 
-    # 限制输入 token，避免超过模型限制
     combined = "\n".join(msg_summaries)
-    max_chars = 60000  # 约 15k-20k token
+    max_chars = 60000
     if len(combined) > max_chars:
         combined = combined[:max_chars] + f"\n... [truncated, total {len(combined)} chars]"
 
@@ -312,7 +279,7 @@ def _summarize_with_llm(
     prompt: str,
     client=None,
     fallback_to_simple: bool = True
-) -> tuple[str, int]:
+) -> tuple:
     """
     使用 LLM 生成摘要。
     如果 client 为 None，尝试从 dispatcher 获取。
@@ -341,12 +308,9 @@ def _summarize_with_llm(
     return "[摘要生成失败]", 5
 
 
-def _simple_summary(prompt: str) -> tuple[str, int]:
-    """
-    降级方案：从 prompt 中提取关键信息生成简单摘要。
-    """
+def _simple_summary(prompt: str) -> tuple:
+    """降级方案：从 prompt 中提取关键信息生成简单摘要。"""
     lines = prompt.split("\n")
-    # 提取有意义的行（排除提示词指令）
     meaningful = [
         line.strip() for line in lines
         if line.strip()
@@ -359,7 +323,6 @@ def _simple_summary(prompt: str) -> tuple[str, int]:
 
     summary = "[简单摘要] 对话历史较长，关键信息请参考原始 transcript。"
     if meaningful:
-        # 取中间有意义的部分（前20行）
         core = meaningful[:20]
         summary = "\n".join(core)
 
@@ -378,8 +341,6 @@ def check_and_compact(
     """
     检查是否需要自动压缩，并在需要时执行。
     返回压缩结果（未压缩时 compacted=False）。
-
-    调用时机: 每次 agent_loop 循环开始时调用。
     """
     current_tokens = estimate_tokens(messages)
 
@@ -401,17 +362,6 @@ def get_context_stats(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     tool_result_count = sum(1 for m in messages if m.get("role") == "tool")
     compacted_count = sum(1 for m in messages if m.get("_context_compacted"))
 
-    transcripts = []
-    transcripts_dir = CONTEXT_DIR / "transcripts"
-    if transcripts_dir.exists():
-        for f in sorted(transcripts_dir.iterdir()):
-            if f.suffix == ".jsonl":
-                transcripts.append({
-                    "path": str(f),
-                    "size_kb": round(f.stat().st_size / 1024, 1),
-                    "created": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime)),
-                })
-
     return {
         "estimated_tokens": tokens,
         "message_count": msg_count,
@@ -419,36 +369,5 @@ def get_context_stats(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
         "compacted_messages": compacted_count,
         "threshold": AUTO_COMPACT_TOKEN_THRESHOLD,
         "over_threshold": tokens > AUTO_COMPACT_TOKEN_THRESHOLD,
-        "transcripts": transcripts,
+        "transcripts": list_transcripts(),
     }
-
-
-def cleanup_old_transcripts(max_count: int = 50, max_age_days: int = 7) -> int:
-    """
-    清理过老或过多的 transcript 文件。
-    返回清理的文件数量。
-    """
-    transcripts_dir = CONTEXT_DIR / "transcripts"
-    if not transcripts_dir.exists():
-        return 0
-
-    now = time.time()
-    removed = 0
-
-    for f in sorted(transcripts_dir.iterdir()):
-        if f.suffix != ".jsonl":
-            continue
-        age_days = (now - f.stat().st_mtime) / 86400
-        # 超过 max_age_days 或文件总数超过 max_count 时删除最老的
-        if age_days > max_age_days:
-            f.unlink()
-            removed += 1
-
-    # 按修改时间排序，保留最新的 max_count 个
-    all_files = sorted(transcripts_dir.glob("transcript_*.jsonl"), key=lambda f: f.stat().st_mtime)
-    if len(all_files) > max_count:
-        for f in all_files[:-max_count]:
-            f.unlink()
-            removed += 1
-
-    return removed
