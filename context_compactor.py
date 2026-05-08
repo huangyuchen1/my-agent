@@ -26,7 +26,7 @@ def _get_compact_client():
 # 配置常量
 # ======================
 CONTEXT_DIR = Path(".context")                    # 上下文存储目录
-AUTO_COMPACT_TOKEN_THRESHOLD = 60000              # 自动压缩的 token 阈值
+AUTO_COMPACT_TOKEN_THRESHOLD = 50000              # 自动压缩的 token 阈值
 MICRO_COMPACT_KEEP_RECENT = 3                    # micro_compact 保留最近 N 个 tool_result
 MAX_TOOL_RESULT_PREVIEW = 120                    # tool_result 替换时的最大预览字符数
 SUMMARY_MAX_TOKENS = 3000                         # 摘要模型输出的最大 token 数

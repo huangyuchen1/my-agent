@@ -112,18 +112,17 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
         if compacted_count > 0:
             print(f"\n\033[33m[Layer-1 micro_compact] 已将 {compacted_count} 个旧 tool_result 压缩为占位符\033[0m")
 
-        # Layer 2: auto_compact — token 超过阈值时自动压缩
-        if total_rounds == 1:  # 只在第一轮检查，避免重复压缩
-            compact_result = check_and_compact(messages, client=get_client(), system_prompt=get_system_prompt())
-            if compact_result.get("compacted"):
-                messages[:] = compact_result["compressed_messages"]
-                stats = get_context_stats(messages)
-                print(
-                    f"\n\033[35m[Layer-2 auto_compact] 上下文已自动压缩 "
-                    f"(原 ~{compact_result['original_tokens']} token → 摘要 ~{compact_result['summary_tokens']} token)\033[0m"
-                )
-                print(f"\033[35m[Layer-2] 完整记录: {compact_result['transcript_path']}\033[0m")
-                print(f"\033[35m[Layer-2] 当前上下文: ~{stats['estimated_tokens']} token\033[0m")
+        # Layer 2: auto_compact — token 超过阈值时自动压缩（每轮都检查）
+        compact_result = check_and_compact(messages, client=get_client(), system_prompt=get_system_prompt())
+        if compact_result.get("compacted"):
+            messages[:] = compact_result["compressed_messages"]
+            stats = get_context_stats(messages)
+            print(
+                f"\n\033[35m[Layer-2 auto_compact] 上下文已自动压缩 "
+                f"(原 ~{compact_result['original_tokens']} token → 摘要 ~{compact_result['summary_tokens']} token)\033[0m"
+            )
+            print(f"\033[35m[Layer-2] 完整记录: {compact_result['transcript_path']}\033[0m")
+            print(f"\033[35m[Layer-2] 当前上下文: ~{stats['estimated_tokens']} token\033[0m")
 
         if rounds_since_todo >= 3 and messages:
             _inject_todo_reminder(messages)
