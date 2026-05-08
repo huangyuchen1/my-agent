@@ -10,6 +10,7 @@ from src.tools.task_manager import TASKS
 from src.tools.console import ConsoleTools
 from src.core.skill_loader import SkillLoader
 from src.core.config import get_current_model_config
+from src.core.background_manager import BG
 from src.context.compactor import (
     check_and_compact,
     manual_compact,
@@ -42,11 +43,49 @@ class ToolDispatcher:
             "task_update": self._handle_task_update,
             "task_list": self._handle_task_list,
             "task_get": self._handle_task_get,
+            "background_run": self._handle_background_run,
+            "background_status": self._handle_background_status,
         }
 
     def set_compact_client(self, client) -> None:
         """设置用于摘要生成的 LLM client"""
         self._compact_client = client
+
+    def _handle_background_run(self, arguments: Dict[str, Any]) -> str:
+        """处理 background_run 工具 - 启动后台命令"""
+        command = arguments.get("command", "")
+        if not command:
+            return json.dumps({"error": "No command provided"}, ensure_ascii=False)
+        timeout = arguments.get("timeout", 300)
+        timeout = min(timeout, 600)
+        task_id = BG.run(command, timeout=timeout)
+        return json.dumps({
+            "background": True,
+            "task_id": task_id,
+            "command": command,
+            "message": f"后台任务已启动，task_id={task_id}。完成后结果会自动注入。"
+        }, ensure_ascii=False)
+
+    def _handle_background_status(self, arguments: Dict[str, Any]) -> str:
+        """处理 background_status 工具 - 查询后台任务状态"""
+        list_all = arguments.get("list_all", False)
+        task_id = arguments.get("task_id", None)
+
+        if list_all:
+            tasks = BG.list_tasks()
+            return json.dumps({
+                "success": True,
+                "tasks": tasks,
+                "count": len(tasks)
+            }, ensure_ascii=False)
+
+        if task_id:
+            status = BG.get_status(task_id)
+            if status is None:
+                return json.dumps({"error": f"Task {task_id} not found"}, ensure_ascii=False)
+            return json.dumps({"success": True, "task": status}, ensure_ascii=False)
+
+        return json.dumps({"error": "task_id or list_all is required"}, ensure_ascii=False)
 
     def _handle_load_skill(self, arguments: Dict[str, Any]) -> str:
         """处理 Skill 加载工具"""

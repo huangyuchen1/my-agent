@@ -7,9 +7,12 @@ import json
 import os
 import subprocess
 import sys
+import time
 from typing import Any, Dict
 
 import psutil
+
+from src.core.background_manager import BG
 
 
 class ConsoleTools:
@@ -71,8 +74,19 @@ class ConsoleTools:
     def bash(self, arguments: Dict[str, Any]) -> str:
         """执行 Shell 命令"""
         command = arguments.get("command", "")
+        background = arguments.get("background", False)
+
         if not command:
             return json.dumps({"error": "No command provided"}, ensure_ascii=False)
+
+        if background:
+            task_id = BG.run(command, timeout=300)
+            return json.dumps({
+                "background": True,
+                "task_id": task_id,
+                "command": command,
+                "message": f"后台任务已启动，task_id={task_id}。完成后结果会自动注入。"
+            }, ensure_ascii=False)
 
         result = self._run_command(command)
 

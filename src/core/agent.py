@@ -16,6 +16,7 @@ from src.core.exception_handler import classify_error, format_error_for_display
 from src.subagent.base import SubagentType, SubagentResult
 from src.subagent.manager import SubagentManager
 from src.core.skill_loader import get_skill_loader
+from src.core.background_manager import BG
 from src.context.compactor import (
     micro_compact,
     check_and_compact,
@@ -98,6 +99,22 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
 
     while True:
         total_rounds += 1
+
+        # === 新增：排空后台任务通知队列 ===
+        notifs = BG.drain_notifications()
+        if notifs:
+            notif_text = "\n".join(
+                f"[bg:{n['task_id']}] command={n['command'][:60]}... "
+                f"completed with exit code {n['returncode']}\n"
+                f"result: {n['result']}"
+                for n in notifs
+            )
+            messages.append({
+                "role": "user",
+                "content": f"<background-results>\n{notif_text}\n</background-results>"
+            })
+            print(f"\n\033[32m[后台任务] {len(notifs)} 个任务已完成，已注入通知\033[0m")
+        # ==================================
 
         if not cleanup_done:
             removed = cleanup_old_transcripts()
