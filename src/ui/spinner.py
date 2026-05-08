@@ -19,10 +19,7 @@ def get_spinner_chars() -> list:
 
 
 def show_status(message: str, delay: float = 0.15):
-    """
-    在后台线程中显示状态动画
-    使用 \\r 回到行首覆盖显示
-    """
+    """在后台线程中显示状态动画"""
     global _status_stop_event
     spinners = get_spinner_chars()
     idx = 0

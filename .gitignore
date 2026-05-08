@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Runtime data (now in storage/)
+storage/.tasks/
+storage/.context/
+config/config.json
+
+# Dependencies
+venv/
+.venv/
+env/
+.env
+
+# OS
+.DS_Store
+Thumbs.db
