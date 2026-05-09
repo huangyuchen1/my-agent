@@ -204,6 +204,7 @@ def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -
     """执行工具调用，支持子代理能力"""
     global _pending_compact_instruction
     results = []
+    dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
         tool_name = tool_call.function.name
@@ -311,6 +312,7 @@ def _build_tools_preview(tool_calls) -> str:
 def _execute_tool_calls(tool_calls) -> List[Dict[str, Any]]:
     """执行工具调用（无子代理支持）"""
     results = []
+    dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
         tool_name = tool_call.function.name

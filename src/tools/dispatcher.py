@@ -29,6 +29,7 @@ class ToolDispatcher:
         self.console_tools = ConsoleTools(workspace_path)
         self.skill_loader = SkillLoader()
         self._compact_client = None  # LLM client for summarization, set via set_compact_client
+        self._current_sender = "lead"  # 当前发件人上下文，支持队友间通信
         self._handlers = {
             "bash": self.console_tools.bash,
             "read_file": self.console_tools.read_file,
@@ -112,15 +113,16 @@ class ToolDispatcher:
         broadcast = arguments.get("broadcast", False)
         if not content:
             return json.dumps({"error": "content is required"}, ensure_ascii=False)
+        sender = self._current_sender
         if broadcast:
             members = [m["name"] for m in TM.list_members()]
-            result = BUS.broadcast("lead", content, members)
+            result = BUS.broadcast(sender, content, members)
         elif to:
             targets = [t.strip() for t in to.split(",")]
             results = []
             for target in targets:
                 if target:
-                    results.append(BUS.send("lead", target, content))
+                    results.append(BUS.send(sender, target, content))
             result = "\n".join(results) if results else "No recipients specified"
         else:
             result = "No recipients specified"
