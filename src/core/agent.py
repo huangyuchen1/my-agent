@@ -154,32 +154,43 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
 
         if model_config.thinking_type:
             request_params["extra_body"] = {"thinking": {"type": model_config.thinking_type}}
-
+        
+        request_params["stream"] = True
         completion = _call_model_with_retry(request_params, thinking_msg)
         if completion is None:
             return
 
-        choice = completion.choices[0]
+        # 先收集所有 chunks，再处理
+        chunks_list = []
 
-        assistant_msg = _build_assistant_message(choice.message)
+        # 流式打印文字内容
+        for chunk in completion:
+            chunks_list.append(chunk)
+            delta = chunk.choices[0].delta
+            if delta.content:
+                print(delta.content, end="", flush=True)
+        print()  # 流结束后换行
+
+        # 从 chunks 重建完整响应对象
+        assistant_msg, tool_calls = _rebuild_response_from_chunks(chunks_list)
         messages.append(assistant_msg)
 
-        if choice.finish_reason != "tool_calls":
+        if not tool_calls:
             return
 
-        start_status(_build_tools_preview(choice.message.tool_calls))
+        start_status(_build_tools_preview(tool_calls))
 
         if use_subagent:
-            results = _execute_with_subagent_support(choice.message.tool_calls, messages)
+            results = _execute_with_subagent_support(tool_calls, messages)
         else:
-            results = _execute_tool_calls(choice.message.tool_calls)
+            results = _execute_tool_calls(tool_calls)
 
         stop_status(success=True, final_msg=f"工具调用完成 ({len(results)}个工具)")
 
-        _append_tool_results(messages, choice.message.tool_calls, results)
+        _append_tool_results(messages, tool_calls, results)
 
         if _pending_compact_instruction is not None or any(
-            tc.function.name == "compact" for tc in choice.message.tool_calls
+            tc["function"]["name"] == "compact" for tc in tool_calls
         ):
             instruction = _pending_compact_instruction
             _pending_compact_instruction = None
@@ -200,21 +211,21 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
             print("\033[36m压缩完成，Agent 将在下一轮使用压缩后的上下文继续工作\033[0m")
 
 
-def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _execute_with_subagent_support(tool_calls: List[Dict], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """执行工具调用，支持子代理能力"""
     global _pending_compact_instruction
     results = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
-        tool_name = tool_call.function.name
-        tool_args = json.loads(tool_call.function.arguments)
+        tool_name = tool_call["function"]["name"]
+        tool_args = json.loads(tool_call["function"]["arguments"])
 
         if tool_name == "compact":
             _pending_compact_instruction = tool_args.get("instruction")
             results.append({
                 "type": "tool_result",
-                "tool_use_id": tool_call.id,
+                "tool_use_id": tool_call["id"],
                 "content": json.dumps({"status": "compact queued", "instruction": _pending_compact_instruction}, ensure_ascii=False),
             })
             print(f"\n\033[33m$ compact(instruction={_pending_compact_instruction})\033[0m")
@@ -245,7 +256,7 @@ def _execute_with_subagent_support(tool_calls, messages: List[Dict[str, Any]]) -
 
         results.append({
             "type": "tool_result",
-            "tool_use_id": tool_call.id,
+            "tool_use_id": tool_call["id"],
             "content": output,
         })
 
@@ -279,6 +290,56 @@ def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
                 return None
 
 
+def _rebuild_response_from_chunks(chunks_list):
+    """
+    从流式 chunks 重建完整响应
+    返回: (assistant_msg_dict, tool_calls_list)
+    """
+    full_content = ""
+    collected_tool_calls = {}  # index -> data
+
+    for chunk in chunks_list:
+        delta = chunk.choices[0].delta
+
+        # 收集文字内容
+        if delta.content:
+            full_content += delta.content
+
+        # 收集 tool_calls（流式传输时需要拼接）
+        if delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in collected_tool_calls:
+                    collected_tool_calls[idx] = {
+                        "id": "",
+                        "type": "function",
+                        "function": {"name": "", "arguments": ""}
+                    }
+                tc = collected_tool_calls[idx]
+                if tc_delta.id:
+                    tc["id"] += tc_delta.id
+                if tc_delta.function.name:
+                    tc["function"]["name"] += tc_delta.function.name
+                if tc_delta.function.arguments:
+                    tc["function"]["arguments"] += tc_delta.function.arguments
+
+    # 构建 assistant 消息
+    assistant_msg = {"role": "assistant", "content": full_content}
+
+    # 构建 tool_calls 列表（按 index 排序）
+    tool_calls_list = []
+    if collected_tool_calls:
+        for idx in sorted(collected_tool_calls.keys()):
+            tc_data = collected_tool_calls[idx]
+            # 创建模拟的 tool_call 对象，带有 id 属性
+            tool_calls_list.append(tc_data)
+
+    if tool_calls_list:
+        assistant_msg["tool_calls"] = tool_calls_list
+
+    return assistant_msg, tool_calls_list
+
+
 def _build_assistant_message(message) -> Dict[str, Any]:
     """构建助手消息"""
     assistant_msg = {
@@ -302,21 +363,21 @@ def _build_assistant_message(message) -> Dict[str, Any]:
 
 def _build_tools_preview(tool_calls) -> str:
     """构建工具预览字符串"""
-    tool_names = [tc.function.name for tc in tool_calls]
+    tool_names = [tc['function']['name'] for tc in tool_calls]
     preview = ", ".join(tool_names[:3])
     if len(tool_names) > 3:
         preview += f" (+{len(tool_names) - 3}个)"
     return f"正在调用工具: {preview}"
 
 
-def _execute_tool_calls(tool_calls) -> List[Dict[str, Any]]:
+def _execute_tool_calls(tool_calls: List[Dict]) -> List[Dict[str, Any]]:
     """执行工具调用（无子代理支持）"""
     results = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
-        tool_name = tool_call.function.name
-        tool_args = json.loads(tool_call.function.arguments)
+        tool_name = tool_call["function"]["name"]
+        tool_args = json.loads(tool_call["function"]["arguments"])
 
         print(f"\n\033[33m$ {tool_name}({json.dumps(tool_args)[:100]}...)\033[0m")
 
@@ -329,19 +390,19 @@ def _execute_tool_calls(tool_calls) -> List[Dict[str, Any]]:
 
         results.append({
             "type": "tool_result",
-            "tool_use_id": tool_call.id,
+            "tool_use_id": tool_call["id"],
             "content": output,
         })
 
     return results
 
 
-def _append_tool_results(messages: List[Dict[str, Any]], tool_calls, results) -> None:
+def _append_tool_results(messages: List[Dict[str, Any]], tool_calls: List[Dict], results: List[Dict[str, Any]]) -> None:
     """追加工具结果到消息列表"""
     for tc, result in zip(tool_calls, results):
         messages.append({
             "role": "tool",
-            "tool_call_id": tc.id,
+            "tool_call_id": tc["id"],
             "content": result["content"],
         })
 
