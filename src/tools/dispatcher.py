@@ -13,6 +13,8 @@ from src.core.config import get_current_model_config
 from src.core.background_manager import BG
 from src.subagent.message_bus import BUS
 from src.subagent.teammate_manager import TM
+from src.subagent.protocols import PROTOCOLS
+from src.tools.handlers.worktree_handler import worktree_handler
 from src.context.compactor import (
     check_and_compact,
     manual_compact,
@@ -53,6 +55,20 @@ class ToolDispatcher:
             "team_inbox": self._handle_team_inbox,
             "team_list": self._handle_team_list,
             "team_shutdown": self._handle_team_shutdown,
+            # s10: Shutdown Protocol
+            "team_shutdown_req": self._handle_team_shutdown_req,
+            "team_shutdown_resp": self._handle_team_shutdown_resp,
+            # s10: Plan Approval Protocol
+            "team_plan_submit": self._handle_team_plan_submit,
+            "team_plan_review": self._handle_team_plan_review,
+            # s11: Autonomous Agent
+            "idle": self._handle_idle,
+            "claim_task": self._handle_claim_task,
+            # s12: Worktree Task Isolation
+            "worktree_create": self._handle_worktree_create,
+            "worktree_remove": self._handle_worktree_remove,
+            "worktree_list": self._handle_worktree_list,
+            "worktree_execute": self._handle_worktree_execute,
         }
 
     def set_compact_client(self, client) -> None:
@@ -144,12 +160,187 @@ class ToolDispatcher:
         return json.dumps({"members": members, "count": len(members)}, ensure_ascii=False)
 
     def _handle_team_shutdown(self, arguments: Dict[str, Any]) -> str:
-        """处理 team_shutdown 工具 - 关闭队友"""
+        """处理 team_shutdown 工具 - 关闭队友（直接关闭，无握手）"""
         name = arguments.get("name", "")
         if not name:
             return json.dumps({"error": "name is required"}, ensure_ascii=False)
         result = TM.shutdown(name)
         return json.dumps({"success": True, "message": result})
+
+    # s10: Shutdown Protocol
+    def _handle_team_shutdown_req(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_shutdown_req 工具 - 发送结构化关机请求"""
+        name = arguments.get("name", "")
+        if not name:
+            return json.dumps({"error": "name is required"}, ensure_ascii=False)
+        
+        # 创建请求
+        req_id = PROTOCOLS.create_shutdown_request(name)
+        
+        # 通过消息总线发送
+        BUS.send(
+            sender="lead",
+            to=name,
+            content="Please shut down gracefully. Respond with team_shutdown_resp.",
+            msg_type="shutdown_request",
+            extra={"request_id": req_id}
+        )
+        
+        return json.dumps({
+            "success": True,
+            "request_id": req_id,
+            "message": f"Shutdown request {req_id} sent to '{name}' (status: pending). Wait for response.",
+        }, ensure_ascii=False)
+
+    def _handle_team_shutdown_resp(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_shutdown_resp 工具 - 响应关机请求"""
+        request_id = arguments.get("request_id", "")
+        approve = arguments.get("approve", False)
+        reason = arguments.get("reason", "")
+        
+        if not request_id:
+            return json.dumps({"error": "request_id is required"}, ensure_ascii=False)
+        
+        # 更新请求状态
+        req = PROTOCOLS.respond_shutdown(request_id, approve, reason)
+        if "error" in req:
+            return json.dumps(req, ensure_ascii=False)
+        
+        # 获取请求信息
+        target = req.get("target", "")
+        
+        # 发送响应消息给发件人
+        BUS.send(
+            sender=self._current_sender,
+            to="lead",
+            content=f"Shutdown response: {'approved' if approve else 'rejected'}. Reason: {reason}",
+            msg_type="shutdown_response",
+            extra={"request_id": request_id, "approve": approve}
+        )
+        
+        # 如果批准关机，更新队友状态
+        if approve:
+            TM.shutdown(target)
+        
+        return json.dumps({
+            "success": True,
+            "request_id": request_id,
+            "status": req["status"],
+            "message": f"Shutdown request {request_id} responded: {req['status']}",
+        }, ensure_ascii=False)
+
+    # s10: Plan Approval Protocol
+    def _handle_team_plan_submit(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_plan_submit 工具 - 队友提交计划申请"""
+        plan = arguments.get("plan", "")
+        if not plan:
+            return json.dumps({"error": "plan is required"}, ensure_ascii=False)
+        
+        # 创建计划请求
+        req_id = PROTOCOLS.create_plan_request(self._current_sender, plan)
+        
+        # 发送请求给领导
+        BUS.send(
+            sender=self._current_sender,
+            to="lead",
+            content=f"Plan submitted for review:\n\n{plan}",
+            msg_type="plan_request",
+            extra={"request_id": req_id}
+        )
+        
+        return json.dumps({
+            "success": True,
+            "request_id": req_id,
+            "message": f"Plan request {req_id} submitted to lead. Awaiting approval.",
+        }, ensure_ascii=False)
+
+    def _handle_team_plan_review(self, arguments: Dict[str, Any]) -> str:
+        """处理 team_plan_review 工具 - 领导审批计划"""
+        request_id = arguments.get("request_id", "")
+        approve = arguments.get("approve", False)
+        feedback = arguments.get("feedback", "")
+        
+        if not request_id:
+            return json.dumps({"error": "request_id is required"}, ensure_ascii=False)
+        
+        # 更新请求状态
+        req = PROTOCOLS.respond_plan(request_id, approve, feedback)
+        if "error" in req:
+            return json.dumps(req, ensure_ascii=False)
+        
+        # 获取请求信息
+        from_name = req.get("from", "")
+        
+        # 发送响应给队友
+        BUS.send(
+            sender="lead",
+            to=from_name,
+            content=f"Plan review result: {'approved' if approve else 'rejected'}.\n\nFeedback: {feedback}",
+            msg_type="plan_response",
+            extra={"request_id": request_id, "approve": approve, "feedback": feedback}
+        )
+        
+        return json.dumps({
+            "success": True,
+            "request_id": request_id,
+            "status": req["status"],
+            "message": f"Plan request {request_id} reviewed: {req['status']}. Response sent to '{from_name}'.",
+        }, ensure_ascii=False)
+
+    # s11: Autonomous Agent
+    def _handle_idle(self, arguments: Dict[str, Any]) -> str:
+        """处理 idle 工具 - 请求进入空闲状态"""
+        return json.dumps({
+            "ready": True,
+            "message": "idle tool called — teammate will enter idle mode, polling inbox and task board.",
+        }, ensure_ascii=False)
+
+    def _handle_claim_task(self, arguments: Dict[str, Any]) -> str:
+        """处理 claim_task 工具 - 认领任务"""
+        task_id = arguments.get("task_id")
+        owner = arguments.get("owner", self._current_sender)
+        
+        if task_id is None:
+            return json.dumps({"error": "task_id is required"}, ensure_ascii=False)
+        
+        try:
+            # 检查任务是否存在且可认领
+            task = TASKS._load(task_id)
+            if task["status"] != "pending":
+                return json.dumps({"error": f"Task {task_id} is not pending (current status: {task['status']})"}, ensure_ascii=False)
+            if task["blockedBy"]:
+                return json.dumps({"error": f"Task {task_id} is blocked by {task['blockedBy']}"}, ensure_ascii=False)
+            if task.get("owner"):
+                return json.dumps({"error": f"Task {task_id} is already owned by {task['owner']}"}, ensure_ascii=False)
+            
+            # 认领任务
+            result = TASKS.update(task_id, status="in_progress", owner=owner)
+            return json.dumps({
+                "success": True,
+                "message": f"Task #{task_id} claimed by '{owner}'",
+                "task": json.loads(result)
+            }, ensure_ascii=False)
+        except FileNotFoundError:
+            return json.dumps({"error": f"Task {task_id} not found"}, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    # s12: Worktree Task Isolation
+    def _handle_worktree_create(self, arguments: Dict[str, Any]) -> str:
+        """处理 worktree_create 工具"""
+        return json.dumps(worktree_handler.handle_worktree_create(arguments), ensure_ascii=False)
+
+    def _handle_worktree_remove(self, arguments: Dict[str, Any]) -> str:
+        """处理 worktree_remove 工具"""
+        return json.dumps(worktree_handler.handle_worktree_remove(arguments), ensure_ascii=False)
+
+    def _handle_worktree_list(self, arguments: Dict[str, Any]) -> str:
+        """处理 worktree_list 工具"""
+        return json.dumps(worktree_handler.handle_worktree_list(arguments), ensure_ascii=False)
+
+    def _handle_worktree_execute(self, arguments: Dict[str, Any]) -> str:
+        """处理 worktree_execute 工具"""
+        return json.dumps(worktree_handler.handle_worktree_execute(arguments), ensure_ascii=False)
 
     def _handle_load_skill(self, arguments: Dict[str, Any]) -> str:
         """处理 Skill 加载工具"""
@@ -179,6 +370,8 @@ class ToolDispatcher:
                 blocked_by=arguments.get("blocked_by"),
                 add_blocked_by=arguments.get("add_blocked_by"),
                 remove_blocked_by=arguments.get("remove_blocked_by"),
+                owner=arguments.get("owner"),  # s11: 支持 owner
+                worktree=arguments.get("worktree"),  # s12: 支持 worktree
             )
             return json.dumps({"success": True, "task": json.loads(result)}, ensure_ascii=False)
         except FileNotFoundError as e:

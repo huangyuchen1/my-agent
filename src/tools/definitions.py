@@ -291,5 +291,152 @@ TOOLS_DEFINITION = [
             "description": "获取当前对话上下文的统计信息，包括估算 token 数量、消息数量、压缩状态、以及已保存的 transcript 文件列表。",
             "parameters": {"type": "object", "properties": {}}
         }
+    },
+    # s10: Shutdown Protocol
+    {
+        "type": "function",
+        "function": {
+            "name": "team_shutdown_req",
+            "description": "向指定队友发送结构化关机请求。使用此工具而非直接 team_shutdown，可以让队友有机会完成收尾工作（如保存状态、发送告别消息）。队友会响应 approve 或 reject。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "要请求关机的队友名称"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_shutdown_resp",
+            "description": "响应来自领导的关机请求。approve=true 表示同意关机并完成收尾工作；approve=false 表示拒绝（可能有任务未完成）。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string", "description": "关机请求的 ID（来自 inbox 消息中的 request_id 字段）"},
+                    "approve": {"type": "boolean", "description": "是否同意关机"},
+                    "reason": {"type": "string", "description": "可选的响应原因"}
+                },
+                "required": ["request_id", "approve"]
+            }
+        }
+    },
+    # s10: Plan Approval Protocol
+    {
+        "type": "function",
+        "function": {
+            "name": "team_plan_submit",
+            "description": "向领导提交计划申请。在执行高风险变更（如重构、多文件修改）之前，提交计划等待领导审批。包含 request_id，领导和队友通过此 ID 追踪请求。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plan": {"type": "string", "description": "计划内容，描述要做什么、为什么要做、预期影响"}
+                },
+                "required": ["plan"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "team_plan_review",
+            "description": "响应队友的计划申请。approve=true 表示批准，队友可以开始执行；approve=false 表示拒绝，附带反馈说明原因。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string", "description": "计划申请的 ID"},
+                    "approve": {"type": "boolean", "description": "是否批准该计划"},
+                    "feedback": {"type": "string", "description": "可选的审批反馈，特别是拒绝时需要说明原因"}
+                },
+                "required": ["request_id", "approve"]
+            }
+        }
+    },
+    # s11: Autonomous Agent
+    {
+        "type": "function",
+        "function": {
+            "name": "idle",
+            "description": "请求进入空闲状态。当完成任务后调用此工具，队友会进入空闲模式，每隔几秒轮询收件箱和任务看板，等待新任务或超时自动关闭。",
+            "parameters": {"type": "object", "properties": {}}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "claim_task",
+            "description": "认领指定任务。用于自治代理从任务看板自动认领任务，或手动分配任务给特定队友。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "integer", "description": "要认领的任务 ID"},
+                    "owner": {"type": "string", "description": "认领者名称（默认从当前上下文推断）"}
+                },
+                "required": ["task_id"]
+            }
+        }
+    },
+    # s12: Worktree Task Isolation
+    {
+        "type": "function",
+        "function": {
+            "name": "worktree_create",
+            "description": "为指定任务创建一个独立的 git worktree 目录。任务将在隔离的工作目录中执行，避免与其他任务的文件冲突。可选绑定 task_id，自动将任务推进到 in_progress 状态。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "worktree 名称（唯一标识）"},
+                    "task_id": {"type": "integer", "description": "可选，绑定到指定任务 ID"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "worktree_remove",
+            "description": "删除指定的 worktree。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "要删除的 worktree 名称"},
+                    "force": {"type": "boolean", "description": "是否强制删除（忽略未合并的更改）"},
+                    "complete_task": {"type": "boolean", "description": "是否同时完成任务"}
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "worktree_list",
+            "description": "列出所有 worktree 及其状态。可选包含最近的事件日志。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "include_events": {"type": "boolean", "description": "是否包含最近的事件日志"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "worktree_execute",
+            "description": "在指定的 worktree 中执行命令。命令会在该 worktree 的隔离目录中运行。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "worktree 名称"},
+                    "command": {"type": "string", "description": "要执行的命令"},
+                    "timeout": {"type": "integer", "description": "超时时间（秒），默认300"}
+                },
+                "required": ["name", "command"]
+            }
+        }
     }
 ]
