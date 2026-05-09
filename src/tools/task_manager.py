@@ -47,6 +47,8 @@ class TaskManager:
             "blockedBy": list(blocked_by) if blocked_by else [],
             "createdAt": datetime.now().isoformat(),
             "completedAt": None,
+            "owner": None,  # s11: 任务认领者
+            "worktree": None,  # s12: 绑定的工作树
         }
         self._save(task)
         self._next_id += 1
@@ -60,6 +62,8 @@ class TaskManager:
         blocked_by: List[int] = None,
         add_blocked_by: List[int] = None,
         remove_blocked_by: List[int] = None,
+        owner: str = None,  # s11: 任务认领者
+        worktree: str = None,  # s12: 绑定的工作树
     ) -> str:
         """更新任务状态或依赖关系"""
         task = self._load(task_id)
@@ -76,6 +80,17 @@ class TaskManager:
             task["blockedBy"] = list(set(task["blockedBy"] + add_blocked_by))
         if remove_blocked_by:
             task["blockedBy"] = [x for x in task["blockedBy"] if x not in remove_blocked_by]
+
+        # s11: 更新认领者
+        if owner is not None:
+            task["owner"] = owner
+
+        # s12: 更新工作树绑定
+        if worktree is not None:
+            task["worktree"] = worktree
+            # 绑定时自动将 pending 推进到 in_progress
+            if task["status"] == "pending":
+                task["status"] = "in_progress"
 
         self._save(task)
         return json.dumps(task, indent=2, ensure_ascii=False)
@@ -124,6 +139,15 @@ class TaskManager:
     def get_runnable_tasks(self) -> List[Dict[str, Any]]:
         """返回所有可立即执行的任务列表"""
         return [t for t in self._all_tasks() if t["status"] == "pending" and not t["blockedBy"]]
+
+    def get_runnable_tasks_unowned(self) -> List[Dict[str, Any]]:
+        """s11: 返回所有可立即执行且无认领者的任务列表（用于自治代理自动认领）"""
+        return [
+            t for t in self._all_tasks()
+            if t["status"] == "pending"
+            and not t["blockedBy"]
+            and not t.get("owner")  # 无认领者
+        ]
 
     def get_blocked_tasks(self) -> List[Dict[str, Any]]:
         """返回所有被阻塞的任务列表"""
@@ -183,6 +207,13 @@ class TaskManager:
             if completed_id in task.get("blockedBy", []):
                 task["blockedBy"].remove(completed_id)
                 self._save(task)
+
+    def unbind_worktree(self, task_id: int) -> str:
+        """s12: 解绑工作树"""
+        task = self._load(task_id)
+        task["worktree"] = None
+        self._save(task)
+        return json.dumps(task, indent=2, ensure_ascii=False)
 
     def _load_next_id(self) -> int:
         meta = self.dir / "_meta.json"
