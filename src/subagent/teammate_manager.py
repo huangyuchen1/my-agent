@@ -181,6 +181,7 @@ class TeammateManager:
                 for tc in choice.message.tool_calls:
                     tool_name = tc.function.name
                     tool_args = json.loads(tc.function.arguments)
+                    dispatcher._current_sender = name
                     result = dispatcher.run_tool(tool_name, tool_args)
                     tool_results.append(result)
 
