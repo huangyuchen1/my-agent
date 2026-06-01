@@ -26,6 +26,7 @@ from src.context.compactor import (
     AUTO_COMPACT_TOKEN_THRESHOLD,
 )
 from src.context.transcript import cleanup_old_transcripts
+from src.web.event_bus import EventType
 
 
 def get_client() -> OpenAI:
@@ -512,3 +513,299 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ============================================================
+# Web 模式：带事件发射的 agent_loop 版本
+# ============================================================
+
+def agent_loop_with_events(
+    messages: List[Dict[str, Any]],
+    event_bus,
+    use_subagent: bool = True
+) -> None:
+    """
+    Web 模式的 Agent 循环，通过 EventBus 发送所有事件到前端。
+
+    与 agent_loop() 逻辑相同，但在关键节点插入事件发射：
+    - 流式 chunk -> STREAM_CHUNK
+    - 工具调用 -> TOOL_START / TOOL_RESULT
+    - 系统通知 -> BACKGROUND_NOTIFICATION / TEAM_INBOX
+
+    Args:
+        messages: 消息历史
+        event_bus: EventBus 实例
+        use_subagent: 是否启用子代理功能
+    """
+    global _pending_compact_instruction
+    total_rounds = 0
+    cleanup_done = False
+
+    # 发送启动事件
+    event_bus.publish(EventType.AGENT_START, {"rounds": 0})
+
+    while True:
+        total_rounds += 1
+
+        # === 排空后台任务通知队列 ===
+        notifs = BG.drain_notifications()
+        if notifs:
+            for n in notifs:
+                event_bus.publish(EventType.BACKGROUND_NOTIFICATION, {
+                    "task_id": n.get("task_id"),
+                    "command": n.get("command", "")[:60],
+                    "returncode": n.get("returncode"),
+                    "result": n.get("result", "")[:200]
+                })
+            # 也注入到 messages
+            notif_text = "\n".join(
+                f"[bg:{n['task_id']}] command={n['command'][:60]}... "
+                f"completed with exit code {n['returncode']}\n"
+                f"result: {n['result']}"
+                for n in notifs
+            )
+            messages.append({
+                "role": "user",
+                "content": f"<background-results>\n{notif_text}\n</background-results>"
+            })
+        # ==================================
+
+        # === 检查队友收件箱 ===
+        inbox = BUS.read_inbox("lead")
+        if inbox != "[]":
+            count = BUS.get_inbox_count("lead")
+            event_bus.publish(EventType.TEAM_INBOX, {
+                "count": count,
+                "messages": inbox[:500]
+            })
+            messages.append({
+                "role": "user",
+                "content": f"<inbox>\n{inbox}\n</inbox>"
+            })
+        # ==================================
+
+        if not cleanup_done:
+            removed = cleanup_old_transcripts()
+            if removed > 0:
+                event_bus.publish(EventType.COMPACT_EVENT, {
+                    "layer": 0,
+                    "action": "cleanup_old_transcripts",
+                    "removed": removed
+                })
+            cleanup_done = True
+
+        compacted_count = micro_compact(messages)
+        if compacted_count > 0:
+            event_bus.publish(EventType.COMPACT_EVENT, {
+                "layer": 1,
+                "action": "micro_compact",
+                "count": compacted_count
+            })
+
+        compact_result = check_and_compact(messages, client=get_client(), system_prompt=get_system_prompt())
+        if compact_result.get("compacted"):
+            messages[:] = compact_result["compressed_messages"]
+            stats = get_context_stats(messages)
+            event_bus.publish(EventType.COMPACT_EVENT, {
+                "layer": 2,
+                "action": "auto_compact",
+                "original_tokens": compact_result["original_tokens"],
+                "summary_tokens": compact_result["summary_tokens"],
+                "transcript_path": compact_result["transcript_path"],
+                "current_tokens": stats["estimated_tokens"]
+            })
+
+        # 发送思考开始事件
+        event_bus.publish(EventType.THINKING_START, {"round": total_rounds})
+
+        model_config = get_current_model_config()
+        request_params = {
+            "model": model_config.model_id,
+            "messages": messages,
+            "tools": dispatcher.get_all_tools(),
+            "max_tokens": model_config.max_tokens,
+        }
+
+        if model_config.thinking_type:
+            request_params["extra_body"] = {"thinking": {"type": model_config.thinking_type}}
+
+        request_params["stream"] = True
+        completion = _call_model_with_retry(request_params, f"思考中 (第 {total_rounds} 轮)")
+        if completion is None:
+            event_bus.publish(EventType.ERROR, {"message": "API 调用失败"})
+            event_bus.publish(EventType.AGENT_DONE, {"error": True})
+            return
+
+        # 发送思考结束事件
+        event_bus.publish(EventType.THINKING_END, {"round": total_rounds})
+
+        # 收集所有 chunks
+        chunks_list = []
+
+        # 流式处理：每个 chunk 发送事件
+        for chunk in completion:
+            chunks_list.append(chunk)
+            delta = chunk.choices[0].delta
+            if delta.content:
+                event_bus.publish(EventType.STREAM_CHUNK, {"content": delta.content})
+
+        # 发送流结束事件
+        event_bus.publish(EventType.STREAM_END)
+
+        # 从 chunks 重建完整响应
+        assistant_msg, tool_calls = _rebuild_response_from_chunks(chunks_list)
+        messages.append(assistant_msg)
+
+        if not tool_calls:
+            event_bus.publish(EventType.AGENT_MESSAGE_COMPLETE, {
+                "content": assistant_msg.get("content", "")
+            })
+            event_bus.publish(EventType.AGENT_DONE, {"rounds": total_rounds})
+            return
+
+        # 工具调用阶段
+        event_bus.publish(EventType.TOOL_START, {
+            "count": len(tool_calls),
+            "names": [tc["function"]["name"] for tc in tool_calls]
+        })
+
+        if use_subagent:
+            results = _execute_with_subagent_support_events(tool_calls, messages, event_bus)
+        else:
+            results = _execute_tool_calls_events(tool_calls, event_bus)
+
+        _append_tool_results(messages, tool_calls, results)
+
+        # 发送工具结束事件
+        for tc, result in zip(tool_calls, results):
+            event_bus.publish(EventType.TOOL_END, {
+                "name": tc["function"]["name"],
+                "success": not result.get("error")
+            })
+
+        # 处理 compact 工具调用
+        if _pending_compact_instruction is not None or any(
+            tc["function"]["name"] == "compact" for tc in tool_calls
+        ):
+            instruction = _pending_compact_instruction
+            _pending_compact_instruction = None
+            compact_result = manual_compact(
+                messages,
+                client=get_client(),
+                system_prompt=get_system_prompt(),
+                instruction=instruction,
+            )
+            messages[:] = compact_result["compressed_messages"]
+            stats = get_context_stats(messages)
+            event_bus.publish(EventType.COMPACT_EVENT, {
+                "layer": 3,
+                "action": "manual_compact",
+                "instruction": instruction,
+                "original_tokens": compact_result["original_tokens"],
+                "summary_tokens": compact_result["summary_tokens"],
+                "transcript_path": compact_result["transcript_path"],
+                "current_tokens": stats["estimated_tokens"]
+            })
+
+
+def _execute_with_subagent_support_events(
+    tool_calls: List[Dict],
+    messages: List[Dict[str, Any]],
+    event_bus
+) -> List[Dict[str, Any]]:
+    """执行工具调用（带事件发射）"""
+    global _pending_compact_instruction
+    results = []
+    dispatcher._current_sender = "lead"
+
+    for tool_call in tool_calls:
+        tool_name = tool_call["function"]["name"]
+        tool_args = json.loads(tool_call["function"]["arguments"])
+
+        # 发送单个工具开始事件
+        event_bus.publish(EventType.TOOL_START, {
+            "name": tool_name,
+            "arguments": tool_args,
+            "id": tool_call["id"]
+        })
+
+        if tool_name == "compact":
+            _pending_compact_instruction = tool_args.get("instruction")
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": json.dumps({"status": "compact queued", "instruction": _pending_compact_instruction}, ensure_ascii=False),
+            })
+            event_bus.publish(EventType.TOOL_RESULT, {
+                "name": tool_name,
+                "result": {"status": "compact queued"}
+            })
+            continue
+
+        if tool_name == "context_stats":
+            stats = get_context_stats(messages)
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": tool_call["id"],
+                "content": json.dumps(stats, ensure_ascii=False, indent=2),
+            })
+            event_bus.publish(EventType.TOOL_RESULT, {
+                "name": tool_name,
+                "result": stats
+            })
+            continue
+
+        if tool_name == "spawn_subagent":
+            output = json.dumps({"error": "spawn_subagent 已废弃，请使用 team_spawn"})
+        elif tool_name == "$web_search":
+            output = json.dumps(tool_args)
+        else:
+            output = dispatcher.run_tool(tool_name, tool_args)
+
+        # 发送工具结果事件
+        event_bus.publish(EventType.TOOL_RESULT, {
+            "name": tool_name,
+            "result": output[:500] if output else "(no output)"
+        })
+
+        results.append({
+            "type": "tool_result",
+            "tool_use_id": tool_call["id"],
+            "content": output,
+        })
+
+    return results
+
+
+def _execute_tool_calls_events(tool_calls: List[Dict], event_bus) -> List[Dict[str, Any]]:
+    """执行工具调用（无子代理支持，带事件发射）"""
+    results = []
+    dispatcher._current_sender = "lead"
+
+    for tool_call in tool_calls:
+        tool_name = tool_call["function"]["name"]
+        tool_args = json.loads(tool_call["function"]["arguments"])
+
+        event_bus.publish(EventType.TOOL_START, {
+            "name": tool_name,
+            "arguments": tool_args,
+            "id": tool_call["id"]
+        })
+
+        if tool_name == "$web_search":
+            output = json.dumps(tool_args)
+        else:
+            output = dispatcher.run_tool(tool_name, tool_args)
+
+        event_bus.publish(EventType.TOOL_RESULT, {
+            "name": tool_name,
+            "result": output[:500] if output else "(no output)"
+        })
+
+        results.append({
+            "type": "tool_result",
+            "tool_use_id": tool_call["id"],
+            "content": output,
+        })
+
+    return results

@@ -58,5 +58,6 @@ def stop_status(success: bool = True, final_msg: str = ""):
         _status_thread.join(timeout=0.5)
 
     if final_msg:
-        icon = "\033[32m✓\033[0m" if success else "\033[31m✗\033[0m"
+        # 使用 ASCII 兼容字符，避免 Windows GBK 编码问题
+        icon = "\033[32m[OK]\033[0m" if success else "\033[31m[ERR]\033[0m"
         print(f"{icon} {final_msg}")

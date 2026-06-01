@@ -25,3 +25,8 @@ asyncio-throttle>=1.0.0
 # 工具可选依赖
 # 使用 langchain 工具时可能需要
 langchain-experimental>=0.3.0
+
+# Web 前端依赖
+# ================================
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
