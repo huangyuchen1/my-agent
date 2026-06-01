@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>myAgent</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg-root: #0d1117;
+            --bg-sidebar: #161b22;
+            --bg-panel: #161b22;
+            --bg-input: #0d1117;
+            --bg-hover: #1f2428;
+            --bg-active: #21262d;
+            --bg-card: #161b22;
+            --bg-code: #0d1117;
+            --border: #30363d;
+            --border-muted: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #484f58;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --accent-subtle: #1f6feb1a;
+            --green: #3fb950;
+            --orange: #d29922;
+            --red: #f85149;
+            --purple: #bc8cff;
+            --radius: 8px;
+            --radius-sm: 4px;
+            --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', sans-serif;
+            --mono: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+        }
+
+        html, body { height: 100%; overflow: hidden; }
+
+        body {
+            font-family: var(--font);
+            background: var(--bg-root);
+            color: var(--text-primary);
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        /* ===== LAYOUT ===== */
+        .app {
+            display: grid;
+            grid-template-columns: 240px 1fr 260px;
+            grid-template-rows: 48px 1fr 60px;
+            height: 100vh;
+        }
+
+        /* ===== HEADER ===== */
+        .header {
+            grid-column: 1 / -1;
+            background: var(--bg-sidebar);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 10;
+        }
+
+        .header-left { display: flex; align-items: center; gap: 12px; }
+        .header-right { display: flex; align-items: center; gap: 10px; }
+
+        .logo {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--accent);
+            letter-spacing: -0.5px;
+        }
+
+        .model-badge {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            background: var(--accent-subtle);
+            border: 1px solid var(--accent);
+            border-radius: 20px;
+            font-size: 12px;
+            color: var(--accent);
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .model-badge:hover { background: var(--accent); color: #fff; }
+
+        .model-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--green);
+        }
+        .model-dot.running {
+            background: var(--orange);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+        .ws-indicator {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            transition: background 0.3s;
+        }
+        .ws-indicator.online { background: var(--green); }
+
+        /* ===== SIDEBAR ===== */
+        .sidebar {
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 12px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+        }
+        .sidebar-title { font-size: 12px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+
+        .sidebar-search { padding: 8px 12px; }
+        .search-input {
+            width: 100%;
+            padding: 6px 10px;
+            background: var(--bg-root);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 13px;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+        .search-input:focus { border-color: var(--accent); }
+
+        .chat-list { flex: 1; overflow-y: auto; padding: 8px; }
+        .chat-list::-webkit-scrollbar { width: 4px; }
+        .chat-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .chat-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-secondary);
+            transition: all 0.15s;
+            margin-bottom: 2px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .chat-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .chat-item.active { background: var(--bg-active); color: var(--text-primary); border-left: 2px solid var(--accent); }
+        .chat-item-icon { flex-shrink: 0; font-size: 12px; }
+        .chat-item-text { overflow: hidden; text-overflow: ellipsis; }
+        .chat-item-time { flex-shrink: 0; font-size: 11px; color: var(--text-muted); margin-left: auto; }
+
+        /* ===== MAIN CHAT AREA ===== */
+        .main {
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            background: var(--bg-root);
+        }
+
+        .messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 24px;
+            scroll-behavior: smooth;
+        }
+        .messages::-webkit-scrollbar { width: 6px; }
+        .messages::-webkit-scrollbar-track { background: transparent; }
+        .messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        /* ===== MESSAGE ===== */
+        .msg {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 20px;
+            animation: msgIn 0.2s ease;
+        }
+        @keyframes msgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+        .msg-role-icon {
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+        .msg.user .msg-role-icon { background: var(--accent-subtle); color: var(--accent); border: 1px solid var(--accent); }
+        .msg.assistant .msg-role-icon { background: #2d1f6f33; color: var(--purple); border: 1px solid #bc8cff66; }
+        .msg.system .msg-role-icon { background: #2d1f6f22; color: var(--text-muted); border: 1px solid var(--border); font-size: 10px; }
+
+        .msg-body { flex: 1; min-width: 0; }
+        .msg-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+        .msg-name { font-size: 13px; font-weight: 600; }
+        .msg.user .msg-name { color: var(--accent); }
+        .msg.assistant .msg-name { color: var(--purple); }
+        .msg.system .msg-name { color: var(--text-muted); font-size: 12px; }
+
+        .msg-time { font-size: 11px; color: var(--text-muted); }
+
+        .msg-bubble {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 16px;
+            line-height: 1.6;
+        }
+        .msg.user .msg-bubble {
+            background: var(--accent-subtle);
+            border-color: var(--accent);
+        }
+        .msg.assistant .msg-bubble { border-radius: var(--radius); }
+
+        /* Markdown in bubble */
+        .msg-content { white-space: pre-wrap; word-wrap: break-word; }
+        .msg-content p { margin: 0 0 8px; }
+        .msg-content p:last-child { margin-bottom: 0; }
+        .msg-content pre {
+            background: var(--bg-code);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 12px 14px;
+            overflow-x: auto;
+            margin: 8px 0;
+            font-family: var(--mono);
+            font-size: 13px;
+            line-height: 1.5;
+        }
+        .msg-content code {
+            background: var(--bg-code);
+            border: 1px solid var(--border-muted);
+            border-radius: 3px;
+            padding: 1px 5px;
+            font-family: var(--mono);
+            font-size: 0.9em;
+            color: #e6edf3;
+        }
+        .msg-content pre code {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: inherit;
+            color: inherit;
+        }
+        .msg-content ul, .msg-content ol { padding-left: 20px; margin: 6px 0; }
+        .msg-content li { margin: 2px 0; }
+        .msg-content h1,.msg-content h2,.msg-content h3 { margin: 12px 0 6px; font-weight: 600; }
+        .msg-content h1 { font-size: 1.3em; }
+        .msg-content h2 { font-size: 1.15em; }
+        .msg-content h3 { font-size: 1em; }
+        .msg-content a { color: var(--accent); }
+        .msg-content blockquote {
+            border-left: 3px solid var(--border);
+            padding-left: 12px;
+            color: var(--text-secondary);
+            margin: 8px 0;
+        }
+        .msg-content table { border-collapse: collapse; margin: 8px 0; width: 100%; }
+        .msg-content th,.msg-content td { border: 1px solid var(--border); padding: 6px 10px; font-size: 13px; }
+        .msg-content th { background: var(--bg-hover); }
+
+        /* Streaming cursor */
+        .cursor-blink {
+            display: inline-block;
+            width: 2px;
+            height: 14px;
+            background: var(--accent);
+            margin-left: 2px;
+            vertical-align: middle;
+            animation: blink 0.8s step-end infinite;
+        }
+        @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0; } }
+
+        /* ===== TOOL CARDS ===== */
+        .tool-cards { margin-top: 8px; }
+
+        .tool-card {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            margin-bottom: 6px;
+            overflow: hidden;
+            transition: border-color 0.15s;
+        }
+        .tool-card:hover { border-color: var(--text-muted); }
+        .tool-card.running { border-color: var(--orange); }
+        .tool-card.success { border-color: var(--green); }
+        .tool-card.error { border-color: var(--red); }
+
+        .tool-card-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 10px;
+            background: var(--bg-hover);
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .tool-card-icon { color: var(--orange); font-size: 11px; }
+        .tool-card-name {
+            font-family: var(--mono);
+            color: var(--orange);
+            font-size: 12px;
+        }
+        .tool-card-badge {
+            margin-left: auto;
+            font-size: 10px;
+            padding: 1px 6px;
+            border-radius: 10px;
+            color: #fff;
+            background: var(--text-muted);
+        }
+        .tool-card.running .tool-card-badge { background: var(--orange); }
+        .tool-card.success .tool-card-badge { background: var(--green); }
+        .tool-card.error .tool-card-badge { background: var(--red); }
+
+        .tool-card-body { display: none; padding: 10px 12px; font-size: 12px; }
+        .tool-card.expanded .tool-card-body { display: block; }
+
+        .tool-args-label { color: var(--text-muted); margin-bottom: 4px; font-size: 11px; }
+        .tool-args-val {
+            background: var(--bg-code);
+            border: 1px solid var(--border-muted);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-family: var(--mono);
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 160px;
+            overflow-y: auto;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+        .tool-args-val::-webkit-scrollbar { width: 4px; }
+        .tool-args-val::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .tool-result-label { color: var(--text-muted); margin-bottom: 4px; font-size: 11px; }
+        .tool-result-val {
+            background: var(--bg-code);
+            border: 1px solid var(--border-muted);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            font-family: var(--mono);
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-break: break-all;
+            max-height: 200px;
+            overflow-y: auto;
+            color: var(--green);
+        }
+        .tool-result-val::-webkit-scrollbar { width: 4px; }
+        .tool-result-val::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+        .tool-result-val.error { color: var(--red); }
+
+        /* ===== INPUT AREA ===== */
+        .input-area {
+            border-top: 1px solid var(--border);
+            padding: 12px 24px 16px;
+            background: var(--bg-sidebar);
+        }
+
+        .input-box {
+            display: flex;
+            align-items: flex-end;
+            gap: 10px;
+            background: var(--bg-input);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 8px 12px;
+            transition: border-color 0.15s;
+        }
+        .input-box:focus-within { border-color: var(--accent); }
+
+        .input-textarea {
+            flex: 1;
+            background: transparent;
+            border: none;
+            outline: none;
+            color: var(--text-primary);
+            font-size: 14px;
+            font-family: var(--font);
+            resize: none;
+            min-height: 20px;
+            max-height: 120px;
+            overflow-y: auto;
+            line-height: 1.5;
+            padding: 2px 0;
+        }
+        .input-textarea::placeholder { color: var(--text-muted); }
+        .input-textarea::-webkit-scrollbar { width: 4px; }
+        .input-textarea::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .input-actions { display: flex; align-items: center; gap: 6px; }
+
+        .btn-icon {
+            width: 32px; height: 32px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            transition: all 0.15s;
+        }
+        .btn-icon:hover { background: var(--bg-hover); color: var(--text-primary); }
+        .btn-icon:disabled { opacity: 0.3; cursor: not-allowed; }
+
+        .btn-send {
+            height: 32px;
+            padding: 0 14px;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: var(--accent);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .btn-send:hover { background: var(--accent-hover); }
+        .btn-send:disabled { background: var(--text-muted); cursor: not-allowed; }
+
+        /* ===== RIGHT SIDEBAR ===== */
+        .right-sidebar {
+            background: var(--bg-sidebar);
+            border-left: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .right-tabs {
+            display: flex;
+            border-bottom: 1px solid var(--border);
+        }
+        .right-tab {
+            flex: 1;
+            padding: 10px 8px;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-muted);
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.15s;
+            white-space: nowrap;
+        }
+        .right-tab:hover { color: var(--text-secondary); }
+        .right-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+        .right-panel-container { flex: 1; overflow: hidden; position: relative; }
+
+        .right-panel {
+            position: absolute;
+            inset: 0;
+            overflow-y: auto;
+            padding: 12px;
+            display: none;
+        }
+        .right-panel.active { display: block; }
+        .right-panel::-webkit-scrollbar { width: 4px; }
+        .right-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        .info-section { margin-bottom: 16px; }
+        .info-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+        .info-value { font-size: 13px; color: var(--text-primary); }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+        .info-card {
+            background: var(--bg-root);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+        }
+        .info-card-num { font-size: 18px; font-weight: 700; color: var(--accent); }
+        .info-card-label { font-size: 11px; color: var(--text-muted); }
+
+        .agent-state-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid var(--border-muted);
+            font-size: 12px;
+        }
+        .agent-state-item:last-child { border-bottom: none; }
+        .agent-state-key { color: var(--text-secondary); }
+        .agent-state-val { color: var(--text-primary); font-family: var(--mono); font-size: 11px; }
+
+        .team-member-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: var(--radius-sm);
+            margin-bottom: 4px;
+            background: var(--bg-root);
+            border: 1px solid var(--border);
+            font-size: 12px;
+        }
+        .member-avatar {
+            width: 24px; height: 24px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px; font-weight: 600;
+        }
+        .member-info { flex: 1; }
+        .member-name { font-weight: 500; }
+        .member-role { font-size: 10px; color: var(--text-muted); }
+        .member-status-dot {
+            width: 6px; height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+        .member-status-dot.active { background: var(--green); }
+
+        .bg-task-item {
+            padding: 8px 10px;
+            background: var(--bg-root);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+        .bg-task-name { font-family: var(--mono); color: var(--text-primary); margin-bottom: 2px; }
+        .bg-task-status { font-size: 11px; color: var(--text-muted); }
+        .bg-task-status.done { color: var(--green); }
+        .bg-task-status.running { color: var(--orange); }
+
+        /* ===== MODEL SELECTOR MODAL ===== */
+        .modal-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            backdrop-filter: blur(2px);
+        }
+        .modal-overlay.show { display: flex; }
+
+        .modal {
+            background: var(--bg-sidebar);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            width: 400px;
+            max-height: 80vh;
+            overflow: hidden;
+            box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+        }
+        .modal-header {
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .modal-body { padding: 8px; max-height: 400px; overflow-y: auto; }
+
+        .model-option {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .model-option:hover { background: var(--bg-hover); }
+        .model-option.selected { background: var(--accent-subtle); border: 1px solid var(--accent); }
+        .model-option-name { font-size: 13px; font-weight: 500; }
+        .model-option-id { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
+        .model-option-check { margin-left: auto; color: var(--accent); font-size: 16px; }
+
+        /* ===== WELCOME SCREEN ===== */
+        .welcome {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            text-align: center;
+        }
+        .welcome-icon { font-size: 48px; margin-bottom: 16px; }
+        .welcome-title { font-size: 24px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+        .welcome-subtitle { font-size: 14px; color: var(--text-secondary); max-width: 400px; margin-bottom: 32px; }
+        .welcome-hint { font-size: 12px; color: var(--text-muted); }
+
+        /* ===== LOADING SPINNER ===== */
+        .thinking-dots {
+            display: inline-flex;
+            gap: 3px;
+            margin-left: 4px;
+            vertical-align: middle;
+        }
+        .thinking-dots span {
+            width: 4px; height: 4px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            animation: dot-bounce 1.4s infinite;
+        }
+        .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
+        .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes dot-bounce { 0%,80%,100% { transform: scale(0.6); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
+
+        /* ===== ERROR BANNER ===== */
+        .error-banner {
+            background: #f8514922;
+            border: 1px solid var(--red);
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            margin: 8px 24px;
+            font-size: 13px;
+            color: var(--red);
+        }
+
+        /* ===== MISC ===== */
+        .empty-state {
+            text-align: center;
+            padding: 32px;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        /* Syntax highlight classes for code blocks */
+        .token-keyword { color: #ff7b72; }
+        .token-string { color: #a5d6ff; }
+        .token-comment { color: #8b949e; font-style: italic; }
+        .token-number { color: #79c0ff; }
+        .token-function { color: #d2a8ff; }
+        .token-operator { color: #ff7b72; }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <!-- HEADER -->
+        <header class="header">
+            <div class="header-left">
+                <span class="logo">myAgent</span>
+                <div class="model-badge" id="model-badge" onclick="showModelModal()">
+                    <span class="model-dot" id="model-dot"></span>
+                    <span id="model-name-display">Loading...</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="ws-indicator" id="ws-indicator" title="WebSocket 状态"></div>
+                <button class="btn-icon" onclick="clearChat()" title="清空对话">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                </button>
+                <button class="btn-icon" onclick="refreshStatus()" title="刷新状态">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- LEFT SIDEBAR -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <span class="sidebar-title">会话</span>
+            </div>
+            <div class="sidebar-search">
+                <input class="search-input" placeholder="搜索会话..." oninput="filterChats(this.value)">
+            </div>
+            <div class="chat-list" id="chat-list">
+                <div class="chat-item active" onclick="selectChat(this)" data-id="current">
+                    <span class="chat-item-icon">&#128172;</span>
+                    <span class="chat-item-text">当前会话</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- MAIN CHAT -->
+        <main class="main">
+            <div class="messages" id="messages">
+                <div class="welcome" id="welcome">
+                    <div class="welcome-icon">&#127968;</div>
+                    <div class="welcome-title">欢迎使用 myAgent</div>
+                    <div class="welcome-subtitle">一个智能的 AI Agent，可以通过 WebSocket 与你实时交互。发送消息开始对话。</div>
+                    <div class="welcome-hint">按 Enter 发送，Shift+Enter 换行</div>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <div class="input-box">
+                    <textarea class="input-textarea" id="input-field" placeholder="输入你的消息..." rows="1" oninput="autoResize(this)" onkeydown="handleKeyDown(event)"></textarea>
+                    <div class="input-actions">
+                        <button class="btn-send" id="send-btn" disabled onclick="sendMessage()">
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                            发送
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- RIGHT SIDEBAR -->
+        <aside class="right-sidebar">
+            <div class="right-tabs">
+                <div class="right-tab active" data-tab="status" onclick="switchRightTab(this)">状态</div>
+                <div class="right-tab" data-tab="tools" onclick="switchRightTab(this)">工具</div>
+                <div class="right-tab" data-tab="team" onclick="switchRightTab(this)">团队</div>
+                <div class="right-tab" data-tab="bg" onclick="switchRightTab(this)">后台</div>
+            </div>
+            <div class="right-panel-container">
+                <div class="right-panel active" id="panel-status">
+                    <div class="info-section">
+                        <div class="info-label">概览</div>
+                        <div class="info-grid">
+                            <div class="info-card">
+                                <div class="info-card-num" id="stat-tasks">-</div>
+                                <div class="info-card-label">任务数</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-num" id="stat-team">-</div>
+                                <div class="info-card-label">团队成员</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-num" id="stat-rounds">-</div>
+                                <div class="info-card-label">对话轮次</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-card-num" id="stat-tools">-</div>
+                                <div class="info-card-label">工具调用</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="info-section">
+                        <div class="info-label">Agent 状态</div>
+                        <div id="agent-states">
+                            <div class="agent-state-item">
+                                <span class="agent-state-key">状态</span>
+                                <span class="agent-state-val" id="state-running">空闲</span>
+                            </div>
+                            <div class="agent-state-item">
+                                <span class="agent-state-key">模型</span>
+                                <span class="agent-state-val" id="state-model">-</span>
+                            </div>
+                            <div class="agent-state-item">
+                                <span class="agent-state-key">Token 统计</span>
+                                <span class="agent-state-val" id="state-tokens">-</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="right-panel" id="panel-tools">
+                    <div class="info-section">
+                        <div class="info-label">本轮工具调用</div>
+                        <div id="tools-list">暂无工具调用</div>
+                    </div>
+                </div>
+
+                <div class="right-panel" id="panel-team">
+                    <div class="info-section">
+                        <div class="info-label">团队成员</div>
+                        <div id="team-list">
+                            <div class="empty-state">暂无团队成员</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="right-panel" id="panel-bg">
+                    <div class="info-section">
+                        <div class="info-label">后台任务</div>
+                        <div id="bg-list">
+                            <div class="empty-state">暂无后台任务</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- MODEL SELECTOR MODAL -->
+    <div class="modal-overlay" id="model-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <span>选择模型</span>
+                <button class="btn-icon" onclick="hideModelModal()">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                </button>
+            </div>
+            <div class="modal-body" id="model-options"></div>
+        </div>
+    </div>
+
+<script>
+// ===== STATE =====
+let ws = null;
+let isConnected = false;
+let isRunning = false;
+let toolCallCount = 0;
+let totalRounds = 0;
+let currentBubble = null;
+let pendingTools = {};
+let currentModelId = '';
+
+// ===== INIT =====
+window.addEventListener('DOMContentLoaded', () => {
+    connectWS();
+});
+
+function connectWS() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(`${proto}${location.host}/ws`);
+
+    ws.onopen = () => {
+        isConnected = true;
+        document.getElementById('ws-indicator').classList.add('online');
+    };
+
+    ws.onclose = () => {
+        isConnected = false;
+        isRunning = false;
+        document.getElementById('ws-indicator').classList.remove('online');
+        setDot('');
+        setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = (e) => console.error('WS error', e);
+
+    ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        dispatch(msg);
+    };
+}
+
+// ===== DISPATCH =====
+function dispatch(msg) {
+    const { type, data } = msg;
+    switch (type) {
+        case 'connected':
+            hideWelcome();
+            addSystem('已连接到 myAgent');
+            break;
+
+        case 'status':
+            applyStatus(data);
+            break;
+
+        case 'user_message':
+            appendUserMsg(data.content);
+            break;
+
+        case 'agent_start':
+            setRunning(true);
+            break;
+
+        case 'thinking_start':
+            addSystem(`思考中 (第 ${data.round || '?'} 轮)...`);
+            totalRounds = data.round || totalRounds;
+            document.getElementById('stat-rounds').textContent = totalRounds;
+            break;
+
+        case 'stream_chunk':
+            streamToBubble(data.content);
+            break;
+
+        case 'stream_end':
+            finalizeBubble();
+            break;
+
+        case 'agent_message_complete':
+            setRunning(false);
+            break;
+
+        case 'tool_start':
+            toolStart(data);
+            break;
+
+        case 'tool_result':
+            toolResult(data);
+            break;
+
+        case 'tool_end':
+            toolEnd(data);
+            break;
+
+        case 'background_notification':
+            bgNotify(data);
+            break;
+
+        case 'team_inbox':
+            addSystem(`[团队] 收到 ${data.count} 条消息`);
+            break;
+
+        case 'compact_event':
+            compactEvent(data);
+            break;
+
+        case 'error':
+            addError(data.message || '未知错误');
+            setRunning(false);
+            break;
+
+        case 'agent_done':
+            setRunning(false);
+            addSystem(data.error ? `Agent 结束 (错误)` : `Agent 完成`);
+            break;
+    }
+}
+
+// ===== STATUS =====
+function applyStatus(data) {
+    if (data.model) {
+        document.getElementById('model-name-display').textContent = data.model.name;
+        document.getElementById('state-model').textContent = data.model.id;
+        currentModelId = data.model.id;
+    }
+    if (data.available_models) {
+        renderModelOptions(data.available_models, data.model?.id);
+    }
+    if (data.tasks) {
+        const total = Object.values(data.tasks.summary || {}).reduce((a, b) => a + b, 0);
+        document.getElementById('stat-tasks').textContent = total || '-';
+    }
+    if (data.team) {
+        document.getElementById('stat-team').textContent = data.team.members?.length || '0';
+        renderTeam(data.team.members || []);
+    }
+    if (data.agent_running !== undefined) {
+        setRunning(data.agent_running);
+    }
+    renderBgTasks(data.background?.tasks || []);
+}
+
+function setRunning(running) {
+    isRunning = running;
+    const dot = document.getElementById('model-dot');
+    if (running) {
+        dot.classList.add('running');
+        document.getElementById('state-running').textContent = '运行中';
+        document.getElementById('state-running').style.color = 'var(--orange)';
+    } else {
+        dot.classList.remove('running');
+        document.getElementById('state-running').textContent = '空闲';
+        document.getElementById('state-running').style.color = 'var(--text-primary)';
+    }
+    const btn = document.getElementById('send-btn');
+    btn.disabled = !isConnected || isRunning;
+    btn.innerHTML = running
+        ? `<span class="thinking-dots"><span></span><span></span><span></span></span> 运行中`
+        : `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg> 发送`;
+}
+
+function setDot(state) {
+    const dot = document.getElementById('model-dot');
+    if (state === 'running') {
+        dot.classList.add('running');
+    } else {
+        dot.classList.remove('running');
+    }
+}
+
+// ===== MESSAGES =====
+function hideWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.style.display = 'none';
+}
+
+function appendUserMsg(text) {
+    hideWelcome();
+    const div = document.createElement('div');
+    div.className = 'msg user';
+    div.innerHTML = `
+        <div class="msg-role-icon">&#128100;</div>
+        <div class="msg-body">
+            <div class="msg-meta"><span class="msg-name">You</span><span class="msg-time">${now()}</span></div>
+            <div class="msg-bubble"><div class="msg-content">${esc(text)}</div></div>
+        </div>`;
+    getMsgs().appendChild(div);
+    scrollBottom();
+}
+
+function streamToBubble(text) {
+    if (!currentBubble) {
+        currentBubble = createAssistantBubble();
+    }
+    currentBubble.content.textContent += text;
+    scrollBottom();
+}
+
+function createAssistantBubble() {
+    const div = document.createElement('div');
+    div.className = 'msg assistant';
+    div.innerHTML = `
+        <div class="msg-role-icon">&#129302;</div>
+        <div class="msg-body">
+            <div class="msg-meta"><span class="msg-name">Agent</span><span class="msg-time">${now()}</span></div>
+            <div class="msg-bubble"><div class="msg-content"><span class="cursor-blink"></span></div></div>
+        </div>`;
+    getMsgs().appendChild(div);
+    scrollBottom();
+    return { el: div, content: div.querySelector('.msg-content') };
+}
+
+function finalizeBubble() {
+    if (!currentBubble) return;
+    const text = currentBubble.content.textContent;
+    currentBubble.content.innerHTML = parseMarkdown(text);
+    currentBubble = null;
+    renderToolCards();
+}
+
+function addSystem(text) {
+    hideWelcome();
+    const div = document.createElement('div');
+    div.className = 'msg system';
+    div.innerHTML = `
+        <div class="msg-role-icon">&#9432;</div>
+        <div class="msg-body">
+            <div class="msg-meta"><span class="msg-name">System</span><span class="msg-time">${now()}</span></div>
+            <div class="msg-bubble"><div class="msg-content">${esc(text)}</div></div>
+        </div>`;
+    getMsgs().appendChild(div);
+    scrollBottom();
+}
+
+function addError(text) {
+    const container = getMsgs();
+    const div = document.createElement('div');
+    div.className = 'error-banner';
+    div.textContent = '错误: ' + text;
+    container.appendChild(div);
+    scrollBottom();
+}
+
+// ===== TOOLS =====
+function toolStart(data) {
+    const name = data.name;
+    if (!name) return;
+    toolCallCount++;
+    document.getElementById('stat-tools').textContent = toolCallCount;
+    pendingTools[name] = {
+        name,
+        args: data.arguments,
+        result: '',
+        status: 'running'
+    };
+}
+
+function toolResult(data) {
+    const t = pendingTools[data.name];
+    if (t) t.result = data.result || '';
+}
+
+function toolEnd(data) {
+    const t = pendingTools[data.name];
+    if (t) t.status = data.success ? 'success' : 'error';
+}
+
+function renderToolCards() {
+    const container = document.getElementById('tools-list');
+    const entries = Object.values(pendingTools);
+    if (entries.length === 0) {
+        container.innerHTML = '<div class="empty-state">暂无工具调用</div>';
+        return;
+    }
+    container.innerHTML = entries.map(t => `
+        <div class="tool-card ${t.status}">
+            <div class="tool-card-header" onclick="this.parentElement.classList.toggle('expanded')">
+                <span class="tool-card-icon">&#9881;</span>
+                <span class="tool-card-name">${esc(t.name)}</span>
+                <span class="tool-card-badge">${t.status === 'running' ? '运行中' : t.status === 'success' ? '完成' : '失败'}</span>
+            </div>
+            <div class="tool-card-body">
+                ${t.args ? `<div class="tool-args-label">参数</div><div class="tool-args-val">${fmtJson(t.args)}</div>` : ''}
+                ${t.result ? `<div class="tool-result-label">结果</div><div class="tool-result-val ${t.status === 'error' ? 'error' : ''}">${esc(truncate(String(t.result), 1000))}</div>` : ''}
+            </div>
+        </div>`).join('');
+}
+
+function clearTools() {
+    pendingTools = {};
+    toolCallCount = 0;
+    document.getElementById('stat-tools').textContent = '-';
+    document.getElementById('tools-list').innerHTML = '<div class="empty-state">暂无工具调用</div>';
+}
+
+// ===== TEAM =====
+function renderTeam(members) {
+    const container = document.getElementById('team-list');
+    if (!members.length) {
+        container.innerHTML = '<div class="empty-state">暂无团队成员</div>';
+        return;
+    }
+    container.innerHTML = members.map(m => `
+        <div class="team-member-item">
+            <div class="member-avatar" style="background:${strToColor(m.name||'?')}22;color:${strToColor(m.name||'?')}">${(m.name||'?')[0].toUpperCase()}</div>
+            <div class="member-info">
+                <div class="member-name">${esc(m.name||'')}</div>
+                <div class="member-role">${esc(m.role||'')}</div>
+            </div>
+            <div class="member-status-dot ${m.status==='WORK'?'active':''}"></div>
+        </div>`).join('');
+}
+
+// ===== BACKGROUND =====
+function renderBgTasks(tasks) {
+    const container = document.getElementById('bg-list');
+    if (!tasks.length) {
+        container.innerHTML = '<div class="empty-state">暂无后台任务</div>';
+        return;
+    }
+    container.innerHTML = tasks.map(t => `
+        <div class="bg-task-item">
+            <div class="bg-task-name">${esc(t.id||t.task_id||'?')}</div>
+            <div class="bg-task-status ${t.status==='done'?'done':t.status==='running'?'running':''}">${esc(t.status||'unknown')}</div>
+        </div>`).join('');
+}
+
+function bgNotify(data) {
+    renderBgTasks([...document.querySelectorAll('.bg-task-item')].map(el => ({
+        id: el.querySelector('.bg-task-name')?.textContent,
+        status: data.returncode === 0 ? 'done' : 'error'
+    })));
+    addSystem(`[后台] ${esc(data.task_id)} 完成 (退出码: ${data.returncode})`);
+}
+
+// ===== COMPACT =====
+function compactEvent(data) {
+    let text = `[压缩] `;
+    if (data.action === 'micro_compact') text += `已压缩 ${data.count} 个工具结果`;
+    else if (data.action === 'auto_compact') text += `上下文自动压缩 (${data.original_tokens} → ${data.summary_tokens} token)`;
+    else if (data.action === 'manual_compact') text += `手动压缩完成 (${data.original_tokens} → ${data.summary_tokens} token)`;
+    addSystem(text);
+}
+
+// ===== MODEL MODAL =====
+function showModelModal() {
+    document.getElementById('model-modal').classList.add('show');
+}
+function hideModelModal() {
+    document.getElementById('model-modal').classList.remove('show');
+}
+
+function renderModelOptions(models, currentId) {
+    const container = document.getElementById('model-options');
+    container.innerHTML = models.map(m => `
+        <div class="model-option ${m === currentId || m.id === currentId ? 'selected' : ''}" onclick="switchModel('${m.id || m}')">
+            <div>
+                <div class="model-option-name">${esc(m.name || m)}</div>
+                <div class="model-option-id">${esc(m.id || m)}</div>
+            </div>
+            <span class="model-option-check" style="opacity:${m === currentId || m.id === currentId ? 1 : 0}">&#10003;</span>
+        </div>`).join('');
+}
+
+function switchModel(modelId) {
+    ws.send(JSON.stringify({ type: 'switch_model', model: modelId }));
+    hideModelModal();
+}
+
+// ===== SEND =====
+function sendMessage() {
+    const input = document.getElementById('input-field');
+    const text = input.value.trim();
+    if (!text || !isConnected || isRunning) return;
+
+    clearTools();
+    pendingTools = {};
+    totalRounds = 0;
+    document.getElementById('stat-rounds').textContent = '-';
+
+    ws.send(JSON.stringify({ type: 'user_message', content: text }));
+    input.value = '';
+    autoResize(input);
+    input.focus();
+}
+
+function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+    }
+}
+
+// ===== CHAT MANAGEMENT =====
+function clearChat() {
+    const msgs = document.getElementById('messages');
+    msgs.innerHTML = `
+        <div class="welcome" id="welcome">
+            <div class="welcome-icon">&#127968;</div>
+            <div class="welcome-title">欢迎使用 myAgent</div>
+            <div class="welcome-subtitle">会话已清空。发送消息开始新对话。</div>
+            <div class="welcome-hint">按 Enter 发送，Shift+Enter 换行</div>
+        </div>`;
+    clearTools();
+    pendingTools = {};
+    toolCallCount = 0;
+    document.getElementById('stat-tools').textContent = '-';
+    totalRounds = 0;
+    document.getElementById('stat-rounds').textContent = '-';
+}
+
+function refreshStatus() {
+    if (ws && isConnected) {
+        ws.send(JSON.stringify({ type: 'get_status' }));
+    }
+}
+
+// ===== TABS =====
+function switchRightTab(tab) {
+    document.querySelectorAll('.right-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.right-panel').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+}
+
+// ===== INPUT =====
+function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+}
+
+// ===== UTILS =====
+function getMsgs() { return document.getElementById('messages'); }
+
+function scrollBottom() {
+    const el = getMsgs();
+    el.scrollTop = el.scrollHeight;
+}
+
+function now() {
+    return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+}
+
+function esc(s) {
+    if (s == null) return '';
+    const div = document.createElement('div');
+    div.textContent = String(s);
+    return div.innerHTML;
+}
+
+function fmtJson(obj) {
+    try {
+        return JSON.stringify(JSON.parse(obj), null, 2);
+    } catch {
+        return String(obj);
+    }
+}
+
+function truncate(s, max) {
+    return s.length > max ? s.slice(0, max) + '...' : s;
+}
+
+function strToColor(s) {
+    const colors = ['#58a6ff','#3fb950','#d29922','#f85149','#bc8cff','#79c0ff','#56d364','#e3b341'];
+    let hash = 0;
+    for (let i = 0; i < s.length; i++) hash = s.charCodeAt(i) + ((hash << 5) - hash);
+    return colors[Math.abs(hash) % colors.length];
+}
+
+function filterChats(q) {
+    document.querySelectorAll('.chat-item').forEach(el => {
+        const text = el.querySelector('.chat-item-text')?.textContent || '';
+        el.style.display = text.includes(q) ? '' : 'none';
+    });
+}
+
+function selectChat(el) {
+    document.querySelectorAll('.chat-item').forEach(e => e.classList.remove('active'));
+    el.classList.add('active');
+}
+
+// ===== MARKDOWN PARSER =====
+function parseMarkdown(text) {
+    if (!text) return '';
+    text = esc(text);
+
+    // Code blocks (```lang\ncode\n```)
+    text = text.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+        return `<pre><code class="lang-${lang}">${highlight(code.trim(), lang)}</code></pre>`;
+    });
+
+    // Inline code
+    text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Bold
+    text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Italic
+    text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+    // Headers
+    text = text.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+    text = text.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+    text = text.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+    // Lists
+    text = text.replace(/^[-*] (.+)$/gm, '<li>$1</li>');
+    text = text.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+
+    // Blockquote
+    text = text.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+    // Links
+    text = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+    // Horizontal rule
+    text = text.replace(/^---$/gm, '<hr>');
+
+    // Paragraphs (double newlines)
+    text = text.split(/\n\n+/).map(p => {
+        if (p.startsWith('<h') || p.startsWith('<ul') || p.startsWith('<pre') || p.startsWith('<blockquote') || p.startsWith('<hr')) {
+            return p;
+        }
+        return `<p>${p.replace(/\n/g, '<br>')}</p>`;
+    }).join('\n');
+
+    return text;
+}
+
+function highlight(code, lang) {
+    // Simple syntax highlighting
+    code = esc(code);
+    const keywords = ['def','class','import','from','return','if','else','elif','for','while','try','except','finally','with','as','in','not','and','or','True','False','None','async','await','lambda','yield','pass','break','continue','raise','assert','del','global','nonlocal','const','let','var','function','async','await','try','catch','finally','throw','new','typeof','instanceof','export','from','default','switch','case'];
+    const builtins = ['print','len','range','str','int','float','list','dict','set','tuple','bool','type','isinstance','hasattr','getattr','setattr','open','input','map','filter','zip','enumerate','sorted','reversed','min','max','sum','abs','round','pow','divmod','any','all','ord','chr','hex','bin','oct','repr','format','slice','object','super','self','this','console','window','document','Array','Object','String','Number','Boolean','Promise','Symbol','Map','Set','WeakMap','WeakSet','parseInt','parseFloat','JSON','Math','Date','RegExp','Error','TypeError','ReferenceError','SyntaxError'];
+    const keywordColor = 'color:#ff7b72';
+    const builtinColor = 'color:#79c0ff';
+    const stringColor = 'color:#a5d6ff';
+    const commentColor = 'color:#8b949e;font-style:italic';
+    const numberColor = 'color:#79c0ff';
+
+    // Comments
+    code = code.replace(/(#.*$|\/\/.*$)/gm, `<span style="${commentColor}">$1</span>`);
+
+    // Strings
+    code = code.replace(/(&quot;|&apos;|`)(.*?)(\1)/g, `<span style="${stringColor}">$1$2$3</span>`);
+
+    // Numbers
+    code = code.replace(/\b(\d+\.?\d*)\b/g, `<span style="${numberColor}">$1</span>`);
+
+    // Keywords
+    keywords.forEach(kw => {
+        const re = new RegExp(`\\b(${kw})\\b`, 'g');
+        code = code.replace(re, `<span style="${keywordColor}">$1</span>`);
+    });
+
+    // Builtins
+    builtins.forEach(b => {
+        const re = new RegExp(`\\b(${b})\\b`, 'g');
+        code = code.replace(re, `<span style="${builtinColor}">$1</span>`);
+    });
+
+    return code;
+}
+</script>
+</body>
+</html>
