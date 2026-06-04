@@ -5,6 +5,7 @@ AI Agent - 支持多模型配置的对话助手
 import json
 import os
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -17,6 +18,7 @@ from src.core.skill_loader import get_skill_loader
 from src.core.background_manager import BG
 from src.subagent.message_bus import BUS
 from src.subagent.teammate_manager import TM
+from src.core.session_manager import get_session_manager
 from src.context.compactor import (
     micro_compact,
     check_and_compact,
@@ -66,6 +68,64 @@ def _format_duration(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = seconds % 60
     return f"{minutes}分{secs:.1f}秒"
+
+
+def _derive_title(messages: List[Dict[str, Any]], max_len: int = 30) -> str:
+    """从消息历史中提取会话标题（取首条用户消息前 max_len 字）"""
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "").strip()
+            if content:
+                return content[:max_len] + ("..." if len(content) > max_len else "")
+    return "未命名会话"
+
+
+def _render_session(messages: List[Dict[str, Any]]) -> None:
+    """完整回放会话中的每一条消息"""
+    print(f"\n{'='*60}")
+    print("  会话回放")
+    print(f"{'='*60}\n")
+
+    user_count = 0
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+
+        if role == "system":
+            preview = content[:80] + "..." if len(content) > 80 else content
+            print(f"\033[90m[系统] {preview}\033[0m")
+
+        elif role == "user":
+            user_count += 1
+            print(f"\033[36m>>> 用户 (第{user_count}轮)\033[0m")
+            # 长内容截断显示
+            display = content[:500] + ("\n... (内容过长已截断) ..." if len(content) > 500 else "")
+            print(display)
+            print()
+
+        elif role == "assistant":
+            if not content:
+                tool_calls = msg.get("tool_calls", [])
+                if tool_calls:
+                    names = ", ".join(tc["function"]["name"] for tc in tool_calls)
+                    print(f"\033[90m[助手] (调用了工具: {names})\033[0m")
+                else:
+                    print(f"\033[90m[助手] (空回复)\033[0m")
+            else:
+                display = content[:500] + ("\n... (内容过长已截断) ..." if len(content) > 500 else "")
+                print(display)
+            print()
+
+        elif role == "tool":
+            tool_name = msg.get("name", "")
+            tc_id = msg.get("tool_call_id", "")[:12]
+            tool_content = str(content)
+            if len(tool_content) > 200:
+                tool_content = tool_content[:200] + "\n... (输出过长已截断) ..."
+            print(f"\033[90m[工具 result | {tool_name} | {tc_id}...] {tool_content}\033[0m")
+            print()
+
+    print(f"{'='*60}\n")
 
 
 def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> None:
@@ -408,6 +468,42 @@ def _append_tool_results(messages: List[Dict[str, Any]], tool_calls: List[Dict],
         })
 
 
+def _print_banner(model_name: str, model_id: str) -> None:
+    # 从 config/banner.json 加载 banner 内容
+    banner_path = Path(__file__).parent.parent.parent / "config" / "banner.json"
+    try:
+        with open(banner_path, "r", encoding="utf-8") as f:
+            banner_cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        banner_cfg = {}
+
+    title = banner_cfg.get("title", "AI Agent - 多模型对话助手")
+    features = banner_cfg.get("features", [])
+    task_help = banner_cfg.get("task_help", [])
+    tips = banner_cfg.get("tips", [])
+
+    print("=" * 60)
+    print(f"        {title}")
+    print(f"        当前模型: {model_name} ({model_id})")
+    print("=" * 60)
+
+    if features:
+        print("\n功能:")
+        for f in features:
+            print(f"  - {f}")
+
+    if task_help:
+        print("\n任务系统:")
+        for h in task_help:
+            print(f"  - {h}")
+
+    if tips:
+        print("\n提示:")
+        for t in tips:
+            print(f"  - {t}")
+    print()
+
+
 def main():
     """主函数 - 命令行交互界面"""
     config = init_config()
@@ -415,26 +511,7 @@ def main():
     model_name = config.current_model_config.name
     model_id = config.current_model_config.model_id
 
-    print("=" * 60)
-    print("        AI Agent - 多模型对话助手")
-    print(f"        当前模型: {model_name} ({model_id})")
-    print("=" * 60)
-    print("\n功能:")
-    print("  - 基础工具: bash, read_file, write_file, list_dir, glob 等")
-    print("  - 任务系统: task_create / task_update / task_list / task_get")
-    print("  - 后台任务: background_run / background_status")
-    print("  - Agent Team: team_spawn / team_send / team_inbox / team_list / team_shutdown")
-    print("\n任务系统:")
-    print("  - task_create: 创建任务，支持 blocked_by 指定前置依赖")
-    print("  - task_update: 更新状态（pending -> in_progress -> completed）")
-    print("  - task_list:   查看所有任务及 DAG 状态")
-    print("  - task_get:    查看单个任务详情")
-    print("  - 任务持久化到 storage/.tasks/，跨压缩和重启存活")
-    print("\n提示:")
-    print("  - 输入 'q' 或 'quit' 退出")
-    print("  - 输入 'team' 查看团队成员状态")
-    print("  - 输入 'models' 查看可用模型")
-    print("  - 输入 'switch <model>' 切换模型\n")
+    _print_banner(model_name, model_id)
 
     history = [{
         "role": "system",
@@ -442,6 +519,9 @@ def main():
     }]
 
     dispatcher.set_compact_client(get_client())
+
+    sm = get_session_manager()
+    current_session_id: Optional[str] = None
 
     while True:
         try:
@@ -486,7 +566,93 @@ def main():
                 print(f"可用模型: {', '.join(config.available_models)}\n")
             continue
 
+        # ---------------- 会话管理命令 ----------------
+        cmd = query.strip()
+
+        # /新建会话
+        if cmd == "/新建会话":
+            history = [{"role": "system", "content": get_system_prompt()}]
+            current_session_id = None
+            _print_banner(model_name, model_id)
+            continue
+
+        # /会话列表
+        if cmd == "/会话列表":
+            sessions = sm.list_sessions()
+            if not sessions:
+                print("\n[会话] 暂无保存的会话\n")
+            else:
+                print("\n[会话列表]")
+                print(f"  {'ID':<15} {'标题':<30} {'消息数':<6} {'更新时间'}")
+                print("  " + "-" * 72)
+                for s in sessions:
+                    title = s["title"][:28] + ".." if len(s["title"]) > 30 else s["title"]
+                    print(f"  {s['id']:<15} {title:<30} {s['message_count']:<6} {s['updated_at']}")
+                print()
+            continue
+
+        # /搜索会话 <关键词>
+        if cmd.startswith("/搜索会话 "):
+            keyword = cmd[6:].strip()
+            results = sm.search_sessions(keyword)
+            if not results:
+                print(f"\n[会话] 未找到包含「{keyword}」的会话\n")
+            else:
+                print(f"\n[会话搜索: {keyword}]")
+                print(f"  {'ID':<15} {'标题':<30} {'消息数':<6} {'更新时间'}")
+                print("  " + "-" * 72)
+                for s in results:
+                    title = s["title"][:28] + ".." if len(s["title"]) > 30 else s["title"]
+                    print(f"  {s['id']:<15} {title:<30} {s['message_count']:<6} {s['updated_at']}")
+                print()
+            continue
+
+        # /加载会话 <id>
+        if cmd.startswith("/加载会话 "):
+            sid = cmd[6:].strip()
+            loaded = sm.load_session(sid)
+            if loaded is None:
+                print(f"\n\033[31m[会话] 未找到: {sid}\033[0m\n")
+            else:
+                history = loaded
+                current_session_id = sid
+                session_meta = sm.get_session_meta(sid)
+                _render_session(history)
+                print(f"\033[32m[会话] 已加载: {session_meta['title']} ({session_meta['message_count']} 条消息)\033[0m\n")
+            continue
+
+        # /删除会话 <id>
+        if cmd.startswith("/删除会话 "):
+            sid = cmd[6:].strip()
+            if sm.delete_session(sid):
+                if current_session_id == sid:
+                    current_session_id = None
+                print(f"\n\033[32m[会话] 已删除: {sid}\033[0m\n")
+            else:
+                print(f"\n\033[31m[会话] 未找到: {sid}\033[0m\n")
+            continue
+
+        # /重命名会话 <id> <新标题>
+        if cmd.startswith("/重命名会话 "):
+            parts = cmd[6:].strip().split(" ", 1)
+            if len(parts) != 2:
+                print("\n\033[31m[用法] /重命名会话 <id> <新标题>\033[0m\n")
+            else:
+                sid, new_title = parts
+                if sm.rename_session(sid, new_title):
+                    print(f"\n\033[32m[会话] 已重命名: {new_title}\033[0m\n")
+                else:
+                    print(f"\n\033[31m[会话] 未找到: {sid}\033[0m\n")
+            continue
+
         history.append({"role": "user", "content": query})
+
+        # 首次发消息时自动创建会话文件
+        if current_session_id is None:
+            title = _derive_title(history)
+            sid = sm.create_session(title, history, model=model_name)["id"]
+            current_session_id = sid
+            print(f"\n\033[33m[会话] 已自动保存 (id: {sid})\033[0m")
 
         start_time = time.time()
         try:
@@ -508,6 +674,11 @@ def main():
 
         duration = time.time() - start_time
         print(f"\n\033[35m[耗时] 本轮对话总时长: {_format_duration(duration)}\033[0m")
+
+        # 每轮对话结束后自动保存会话
+        if current_session_id:
+            sm.save_session(current_session_id, history, model=model_name)
+
         print()
 
 
