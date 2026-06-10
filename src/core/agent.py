@@ -6,7 +6,8 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Iterator, Tuple
 
 from openai import OpenAI
 
@@ -57,7 +58,58 @@ def get_system_prompt() -> str:
     return prompt
 
 
+# ============================================================
+# 指标统计数据类
+# ============================================================
+
+@dataclass
+class ToolMetrics:
+    """单个工具调用的指标"""
+    name: str
+    duration_ms: float
+    success: bool
+    error_msg: str = ""
+    result_preview: str = ""
+
+
+@dataclass
+class RoundMetrics:
+    """单轮模型调用的指标"""
+    round_num: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    input_cost_usd: float
+    output_cost_usd: float
+    duration_ms: float
+    tools: List["ToolMetrics"] = field(default_factory=list)
+
+
+@dataclass
+class SessionMetrics:
+    """整个会话的汇总指标"""
+    rounds: List[RoundMetrics] = field(default_factory=list)
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_input_cost_usd: float = 0.0
+    total_output_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+    total_duration_ms: float = 0.0
+    total_tool_calls: int = 0
+    failed_tool_calls: int = 0
+
+
+# 全局会话指标实例（按需初始化）
+_session_metrics: Optional[SessionMetrics] = None
+
+# 当前轮次的工具 metrics（由 execute 函数写入，由 agent_loop 读取）
+_current_tool_metrics: List[ToolMetrics] = []
+
+
+# ============================================================
 # 全局状态
+# ============================================================
 _pending_compact_instruction: Optional[str] = None
 
 
@@ -68,6 +120,111 @@ def _format_duration(seconds: float) -> str:
     minutes = int(seconds // 60)
     secs = seconds % 60
     return f"{minutes}分{secs:.1f}秒"
+
+
+def _emit_session_metrics_events(event_bus) -> None:
+    """发送完整会话指标事件（Web 模式）"""
+    if _session_metrics is None or not _session_metrics.rounds:
+        return
+    event_bus.publish(EventType.SESSION_METRICS, {
+        "total_rounds": len(_session_metrics.rounds),
+        "total_prompt_tokens": _session_metrics.total_prompt_tokens,
+        "total_completion_tokens": _session_metrics.total_completion_tokens,
+        "total_tokens": _session_metrics.total_tokens,
+        "total_input_cost_usd": _session_metrics.total_input_cost_usd,
+        "total_output_cost_usd": _session_metrics.total_output_cost_usd,
+        "total_cost_usd": _session_metrics.total_cost_usd,
+        "total_duration_ms": _session_metrics.total_duration_ms,
+        "total_tool_calls": _session_metrics.total_tool_calls,
+        "failed_tool_calls": _session_metrics.failed_tool_calls,
+        "rounds": [
+            {
+                "round_num": rm.round_num,
+                "prompt_tokens": rm.prompt_tokens,
+                "completion_tokens": rm.completion_tokens,
+                "total_tokens": rm.total_tokens,
+                "input_cost_usd": rm.input_cost_usd,
+                "output_cost_usd": rm.output_cost_usd,
+                "duration_ms": rm.duration_ms,
+                "tools": [
+                    {
+                        "name": tm.name,
+                        "duration_ms": tm.duration_ms,
+                        "success": tm.success,
+                        "error_msg": tm.error_msg,
+                    }
+                    for tm in rm.tools
+                ],
+            }
+            for rm in _session_metrics.rounds
+        ],
+    })
+
+
+def _print_session_metrics_summary() -> None:
+    """在会话结束时打印指标汇总（命令行模式）"""
+    if _session_metrics is None or not _session_metrics.rounds:
+        return
+
+    total_rounds = len(_session_metrics.rounds)
+    total_ms = _session_metrics.total_duration_ms
+
+    print(f"\n{'='*60}")
+    print(f"  会话指标统计")
+    print(f"{'='*60}")
+    print(f"  总轮次: {total_rounds}    总耗时: {_format_duration(total_ms / 1000)}")
+    print()
+    print(f"  Token 消耗")
+    print(f"    输入: {_session_metrics.total_prompt_tokens:>10,}  "
+          f"输出: {_session_metrics.total_completion_tokens:>10,}  "
+          f"合计: {_session_metrics.total_tokens:>10,}")
+    print(f"  成本（美元）")
+    print(f"    输入: ${_session_metrics.total_input_cost_usd:>10.6f}  "
+          f"输出: ${_session_metrics.total_output_cost_usd:>10.6f}  "
+          f"合计: ${_session_metrics.total_cost_usd:>10.6f}")
+    print(f"  工具调用 (共 {_session_metrics.total_tool_calls} 次)")
+    for rm in _session_metrics.rounds:
+        for tm in rm.tools:
+            status = "\033[32m✓\033[0m" if tm.success else "\033[31m✗\033[0m"
+            err = f"  error: {tm.error_msg[:40]}" if tm.error_msg else ""
+            print(f"    [{rm.round_num}] {tm.name:<25} {tm.duration_ms:>8.1f}ms  {status}{err}")
+    print(f"{'='*60}\n")
+
+
+def _run_tool_with_metrics(tool_name: str, tool_args: Dict) -> Tuple[str, "ToolMetrics"]:
+    """执行单个工具并记录指标，返回 (output, metrics)"""
+    start = time.time()
+    try:
+        output = dispatcher.run_tool(tool_name, tool_args)
+        duration_ms = (time.time() - start) * 1000
+
+        success = True
+        error_msg = ""
+        try:
+            parsed = json.loads(output)
+            if isinstance(parsed, dict) and "error" in parsed:
+                success = False
+                error_msg = str(parsed["error"])
+        except Exception:
+            pass
+
+        preview = output[:100] if output else "(empty)"
+
+        return output, ToolMetrics(
+            name=tool_name,
+            duration_ms=duration_ms,
+            success=success,
+            error_msg=error_msg,
+            result_preview=preview,
+        )
+    except Exception as e:
+        duration_ms = (time.time() - start) * 1000
+        return "", ToolMetrics(
+            name=tool_name,
+            duration_ms=duration_ms,
+            success=False,
+            error_msg=str(e),
+        )
 
 
 def _derive_title(messages: List[Dict[str, Any]], max_len: int = 30) -> str:
@@ -145,9 +302,11 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
         messages: 消息历史
         use_subagent: 是否启用子代理功能
     """
-    global _pending_compact_instruction
+    global _pending_compact_instruction, _session_metrics, _current_tool_metrics
     total_rounds = 0
     cleanup_done = False
+    _session_metrics = SessionMetrics()
+    round_start_time = time.time()
 
     while True:
         total_rounds += 1
@@ -237,14 +396,41 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
         messages.append(assistant_msg)
 
         if not tool_calls:
+            # 记录最终轮指标（无工具调用）
+            duration_ms = (time.time() - round_start_time) * 1000
+            usage = chunks_list[-1].usage if chunks_list else None
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+            total_tokens = usage.total_tokens if usage else 0
+            mc = get_current_model_config()
+            input_cost = prompt_tokens * mc.input_cost_per_1m / 1_000_000
+            output_cost = completion_tokens * mc.output_cost_per_1m / 1_000_000
+            _session_metrics.rounds.append(RoundMetrics(
+                round_num=total_rounds,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                input_cost_usd=input_cost,
+                output_cost_usd=output_cost,
+                duration_ms=duration_ms,
+                tools=[],
+            ))
+            _session_metrics.total_prompt_tokens += prompt_tokens
+            _session_metrics.total_completion_tokens += completion_tokens
+            _session_metrics.total_tokens += total_tokens
+            _session_metrics.total_input_cost_usd += input_cost
+            _session_metrics.total_output_cost_usd += output_cost
+            _session_metrics.total_cost_usd += input_cost + output_cost
+            _session_metrics.total_duration_ms += duration_ms
             return
 
         start_status(_build_tools_preview(tool_calls))
 
         if use_subagent:
-            results = _execute_with_subagent_support(tool_calls, messages)
+            results, tool_metrics = _execute_with_subagent_support(tool_calls, messages)
         else:
-            results = _execute_tool_calls(tool_calls)
+            results, tool_metrics = _execute_tool_calls(tool_calls)
+        _current_tool_metrics = tool_metrics
 
         stop_status(success=True, final_msg=f"工具调用完成 ({len(results)}个工具)")
 
@@ -271,11 +457,47 @@ def agent_loop(messages: List[Dict[str, Any]], use_subagent: bool = True) -> Non
             print(f"\033[35m[Layer-3] 当前上下文: ~{stats['estimated_tokens']} token\033[0m")
             print("\033[36m压缩完成，Agent 将在下一轮使用压缩后的上下文继续工作\033[0m")
 
+        # === 记录本轮 RoundMetrics ===
+        duration_ms = (time.time() - round_start_time) * 1000
+        usage = chunks_list[-1].usage if chunks_list else None
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+        total_tokens = usage.total_tokens if usage else 0
+        mc = get_current_model_config()
+        input_cost = prompt_tokens * mc.input_cost_per_1m / 1_000_000
+        output_cost = completion_tokens * mc.output_cost_per_1m / 1_000_000
 
-def _execute_with_subagent_support(tool_calls: List[Dict], messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """执行工具调用，支持子代理能力"""
+        rm = RoundMetrics(
+            round_num=total_rounds,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            input_cost_usd=input_cost,
+            output_cost_usd=output_cost,
+            duration_ms=duration_ms,
+            tools=list(_current_tool_metrics),
+        )
+        _session_metrics.rounds.append(rm)
+        _session_metrics.total_prompt_tokens += prompt_tokens
+        _session_metrics.total_completion_tokens += completion_tokens
+        _session_metrics.total_tokens += total_tokens
+        _session_metrics.total_input_cost_usd += input_cost
+        _session_metrics.total_output_cost_usd += output_cost
+        _session_metrics.total_cost_usd += input_cost + output_cost
+        _session_metrics.total_duration_ms += duration_ms
+        for tm in _current_tool_metrics:
+            _session_metrics.total_tool_calls += 1
+            if not tm.success:
+                _session_metrics.failed_tool_calls += 1
+
+        round_start_time = time.time()
+
+
+def _execute_with_subagent_support(tool_calls: List[Dict], messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[ToolMetrics]]:
+    """执行工具调用，支持子代理能力。返回 (results, metrics)"""
     global _pending_compact_instruction
     results = []
+    metrics: List[ToolMetrics] = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
@@ -289,29 +511,33 @@ def _execute_with_subagent_support(tool_calls: List[Dict], messages: List[Dict[s
                 "tool_use_id": tool_call["id"],
                 "content": json.dumps({"status": "compact queued", "instruction": _pending_compact_instruction}, ensure_ascii=False),
             })
+            metrics.append(ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="compact queued"))
             print(f"\n\033[33m$ compact(instruction={_pending_compact_instruction})\033[0m")
             print("压缩已加入队列，将在当前轮次结束后执行...")
             continue
-
-        print(f"\n\033[33m$ {tool_name}({json.dumps(tool_args)[:100]}...)\033[0m")
 
         if tool_name == "context_stats":
             stats = get_context_stats(messages)
             results.append({
                 "type": "tool_result",
-                "tool_use_id": tool_call.id,
+                "tool_use_id": tool_call["id"],
                 "content": json.dumps(stats, ensure_ascii=False, indent=2),
             })
+            metrics.append(ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="context stats returned"))
             print(f"\n\033[33m$ context_stats()\033[0m")
             print(json.dumps(stats, ensure_ascii=False, indent=2))
             continue
 
+        print(f"\n\033[33m$ {tool_name}({json.dumps(tool_args)[:100]}...)\033[0m")
+
         if tool_name == "spawn_subagent":
             output = json.dumps({"error": "spawn_subagent 已废弃，请使用 team_spawn"})
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="deprecated warning")
         elif tool_name == "$web_search":
             output = json.dumps(tool_args)
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview=output[:100])
         else:
-            output = dispatcher.run_tool(tool_name, tool_args)
+            output, tm = _run_tool_with_metrics(tool_name, tool_args)
 
         print(output[:300] if output else "(no output)")
 
@@ -320,8 +546,9 @@ def _execute_with_subagent_support(tool_calls: List[Dict], messages: List[Dict[s
             "tool_use_id": tool_call["id"],
             "content": output,
         })
+        metrics.append(tm)
 
-    return results
+    return results, metrics
 
 
 def _call_model_with_retry(request_params: Dict[str, Any], thinking_msg: str):
@@ -431,9 +658,10 @@ def _build_tools_preview(tool_calls) -> str:
     return f"正在调用工具: {preview}"
 
 
-def _execute_tool_calls(tool_calls: List[Dict]) -> List[Dict[str, Any]]:
-    """执行工具调用（无子代理支持）"""
+def _execute_tool_calls(tool_calls: List[Dict]) -> Tuple[List[Dict[str, Any]], List[ToolMetrics]]:
+    """执行工具调用（无子代理支持）。返回 (results, metrics)"""
     results = []
+    metrics: List[ToolMetrics] = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
@@ -444,8 +672,9 @@ def _execute_tool_calls(tool_calls: List[Dict]) -> List[Dict[str, Any]]:
 
         if tool_name == "$web_search":
             output = json.dumps(tool_args)
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview=output[:100])
         else:
-            output = dispatcher.run_tool(tool_name, tool_args)
+            output, tm = _run_tool_with_metrics(tool_name, tool_args)
 
         print(output[:300] if output else "(no output)")
 
@@ -454,8 +683,9 @@ def _execute_tool_calls(tool_calls: List[Dict]) -> List[Dict[str, Any]]:
             "tool_use_id": tool_call["id"],
             "content": output,
         })
+        metrics.append(tm)
 
-    return results
+    return results, metrics
 
 
 def _append_tool_results(messages: List[Dict[str, Any]], tool_calls: List[Dict], results: List[Dict[str, Any]]) -> None:
@@ -675,6 +905,8 @@ def main():
         duration = time.time() - start_time
         print(f"\n\033[35m[耗时] 本轮对话总时长: {_format_duration(duration)}\033[0m")
 
+        _print_session_metrics_summary()
+
         # 每轮对话结束后自动保存会话
         if current_session_id:
             sm.save_session(current_session_id, history, model=model_name)
@@ -708,9 +940,11 @@ def agent_loop_with_events(
         event_bus: EventBus 实例
         use_subagent: 是否启用子代理功能
     """
-    global _pending_compact_instruction
+    global _pending_compact_instruction, _session_metrics, _current_tool_metrics
     total_rounds = 0
     cleanup_done = False
+    _session_metrics = SessionMetrics()
+    round_start_time = time.time()
 
     # 发送启动事件
     event_bus.publish(EventType.AGENT_START, {"rounds": 0})
@@ -804,6 +1038,7 @@ def agent_loop_with_events(
         completion = _call_model_with_retry(request_params, f"思考中 (第 {total_rounds} 轮)")
         if completion is None:
             event_bus.publish(EventType.ERROR, {"message": "API 调用失败"})
+            _emit_session_metrics_events(event_bus)
             event_bus.publish(EventType.AGENT_DONE, {"error": True})
             return
 
@@ -828,6 +1063,42 @@ def agent_loop_with_events(
         messages.append(assistant_msg)
 
         if not tool_calls:
+            duration_ms = (time.time() - round_start_time) * 1000
+            usage = chunks_list[-1].usage if chunks_list else None
+            prompt_tokens = usage.prompt_tokens if usage else 0
+            completion_tokens = usage.completion_tokens if usage else 0
+            total_tokens = usage.total_tokens if usage else 0
+            mc = get_current_model_config()
+            input_cost = prompt_tokens * mc.input_cost_per_1m / 1_000_000
+            output_cost = completion_tokens * mc.output_cost_per_1m / 1_000_000
+            _session_metrics.rounds.append(RoundMetrics(
+                round_num=total_rounds,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                input_cost_usd=input_cost,
+                output_cost_usd=output_cost,
+                duration_ms=duration_ms,
+                tools=[],
+            ))
+            _session_metrics.total_prompt_tokens += prompt_tokens
+            _session_metrics.total_completion_tokens += completion_tokens
+            _session_metrics.total_tokens += total_tokens
+            _session_metrics.total_input_cost_usd += input_cost
+            _session_metrics.total_output_cost_usd += output_cost
+            _session_metrics.total_cost_usd += input_cost + output_cost
+            _session_metrics.total_duration_ms += duration_ms
+
+            event_bus.publish(EventType.ROUND_METRICS, {
+                "round_num": total_rounds,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "input_cost_usd": input_cost,
+                "output_cost_usd": output_cost,
+                "duration_ms": duration_ms,
+            })
+            _emit_session_metrics_events(event_bus)
             event_bus.publish(EventType.AGENT_MESSAGE_COMPLETE, {
                 "content": assistant_msg.get("content", "")
             })
@@ -841,17 +1112,24 @@ def agent_loop_with_events(
         })
 
         if use_subagent:
-            results = _execute_with_subagent_support_events(tool_calls, messages, event_bus)
+            results, tool_metrics = _execute_with_subagent_support_events(tool_calls, messages, event_bus)
         else:
-            results = _execute_tool_calls_events(tool_calls, event_bus)
+            results, tool_metrics = _execute_tool_calls_events(tool_calls, event_bus)
+        _current_tool_metrics = tool_metrics
 
         _append_tool_results(messages, tool_calls, results)
 
         # 发送工具结束事件
-        for tc, result in zip(tool_calls, results):
+        for tc, tm in zip(tool_calls, tool_metrics):
             event_bus.publish(EventType.TOOL_END, {
                 "name": tc["function"]["name"],
-                "success": not result.get("error")
+                "success": tm.success
+            })
+            event_bus.publish(EventType.TOOL_METRICS, {
+                "name": tm.name,
+                "duration_ms": tm.duration_ms,
+                "success": tm.success,
+                "error_msg": tm.error_msg,
             })
 
         # 处理 compact 工具调用
@@ -878,22 +1156,68 @@ def agent_loop_with_events(
                 "current_tokens": stats["estimated_tokens"]
             })
 
+        # === 记录本轮 RoundMetrics ===
+        duration_ms = (time.time() - round_start_time) * 1000
+        usage = chunks_list[-1].usage if chunks_list else None
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+        total_tokens = usage.total_tokens if usage else 0
+        mc = get_current_model_config()
+        input_cost = prompt_tokens * mc.input_cost_per_1m / 1_000_000
+        output_cost = completion_tokens * mc.output_cost_per_1m / 1_000_000
+
+        rm = RoundMetrics(
+            round_num=total_rounds,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            input_cost_usd=input_cost,
+            output_cost_usd=output_cost,
+            duration_ms=duration_ms,
+            tools=list(_current_tool_metrics),
+        )
+        _session_metrics.rounds.append(rm)
+        _session_metrics.total_prompt_tokens += prompt_tokens
+        _session_metrics.total_completion_tokens += completion_tokens
+        _session_metrics.total_tokens += total_tokens
+        _session_metrics.total_input_cost_usd += input_cost
+        _session_metrics.total_output_cost_usd += output_cost
+        _session_metrics.total_cost_usd += input_cost + output_cost
+        _session_metrics.total_duration_ms += duration_ms
+        for tm in _current_tool_metrics:
+            _session_metrics.total_tool_calls += 1
+            if not tm.success:
+                _session_metrics.failed_tool_calls += 1
+
+        # 发送单轮指标事件
+        event_bus.publish(EventType.ROUND_METRICS, {
+            "round_num": total_rounds,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "input_cost_usd": input_cost,
+            "output_cost_usd": output_cost,
+            "duration_ms": duration_ms,
+        })
+
+        round_start_time = time.time()
+
 
 def _execute_with_subagent_support_events(
     tool_calls: List[Dict],
     messages: List[Dict[str, Any]],
     event_bus
-) -> List[Dict[str, Any]]:
-    """执行工具调用（带事件发射）"""
+) -> Tuple[List[Dict[str, Any]], List[ToolMetrics]]:
+    """执行工具调用（带事件发射）。返回 (results, metrics)"""
     global _pending_compact_instruction
     results = []
+    metrics: List[ToolMetrics] = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
         tool_name = tool_call["function"]["name"]
         tool_args = json.loads(tool_call["function"]["arguments"])
 
-        # 发送单个工具开始事件
         event_bus.publish(EventType.TOOL_START, {
             "name": tool_name,
             "arguments": tool_args,
@@ -907,10 +1231,12 @@ def _execute_with_subagent_support_events(
                 "tool_use_id": tool_call["id"],
                 "content": json.dumps({"status": "compact queued", "instruction": _pending_compact_instruction}, ensure_ascii=False),
             })
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="compact queued")
             event_bus.publish(EventType.TOOL_RESULT, {
                 "name": tool_name,
                 "result": {"status": "compact queued"}
             })
+            metrics.append(tm)
             continue
 
         if tool_name == "context_stats":
@@ -920,20 +1246,23 @@ def _execute_with_subagent_support_events(
                 "tool_use_id": tool_call["id"],
                 "content": json.dumps(stats, ensure_ascii=False, indent=2),
             })
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="context stats returned")
             event_bus.publish(EventType.TOOL_RESULT, {
                 "name": tool_name,
                 "result": stats
             })
+            metrics.append(tm)
             continue
 
         if tool_name == "spawn_subagent":
             output = json.dumps({"error": "spawn_subagent 已废弃，请使用 team_spawn"})
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview="deprecated warning")
         elif tool_name == "$web_search":
             output = json.dumps(tool_args)
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview=output[:100])
         else:
-            output = dispatcher.run_tool(tool_name, tool_args)
+            output, tm = _run_tool_with_metrics(tool_name, tool_args)
 
-        # 发送工具结果事件
         event_bus.publish(EventType.TOOL_RESULT, {
             "name": tool_name,
             "result": output[:500] if output else "(no output)"
@@ -944,13 +1273,15 @@ def _execute_with_subagent_support_events(
             "tool_use_id": tool_call["id"],
             "content": output,
         })
+        metrics.append(tm)
 
-    return results
+    return results, metrics
 
 
-def _execute_tool_calls_events(tool_calls: List[Dict], event_bus) -> List[Dict[str, Any]]:
-    """执行工具调用（无子代理支持，带事件发射）"""
+def _execute_tool_calls_events(tool_calls: List[Dict], event_bus) -> Tuple[List[Dict[str, Any]], List[ToolMetrics]]:
+    """执行工具调用（无子代理支持，带事件发射）。返回 (results, metrics)"""
     results = []
+    metrics: List[ToolMetrics] = []
     dispatcher._current_sender = "lead"
 
     for tool_call in tool_calls:
@@ -965,12 +1296,20 @@ def _execute_tool_calls_events(tool_calls: List[Dict], event_bus) -> List[Dict[s
 
         if tool_name == "$web_search":
             output = json.dumps(tool_args)
+            tm = ToolMetrics(name=tool_name, duration_ms=0, success=True, result_preview=output[:100])
         else:
-            output = dispatcher.run_tool(tool_name, tool_args)
+            output, tm = _run_tool_with_metrics(tool_name, tool_args)
 
         event_bus.publish(EventType.TOOL_RESULT, {
             "name": tool_name,
             "result": output[:500] if output else "(no output)"
+        })
+
+        event_bus.publish(EventType.TOOL_METRICS, {
+            "name": tm.name,
+            "duration_ms": tm.duration_ms,
+            "success": tm.success,
+            "error_msg": tm.error_msg,
         })
 
         results.append({
@@ -978,5 +1317,6 @@ def _execute_tool_calls_events(tool_calls: List[Dict], event_bus) -> List[Dict[s
             "tool_use_id": tool_call["id"],
             "content": output,
         })
+        metrics.append(tm)
 
-    return results
+    return results, metrics

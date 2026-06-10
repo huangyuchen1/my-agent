@@ -21,6 +21,8 @@ class ModelConfig:
     system_prompt: str = ""            # 系统提示词模板
     extra_params: Dict[str, Any] = field(default_factory=dict)  # 其他额外参数
     enable_web_search: bool = True  # 是否向大模型暴露联网搜索工具
+    input_cost_per_1m: float = 0.0   # 每百万输入 token 价格（美元）
+    output_cost_per_1m: float = 0.0  # 每百万输出 token 价格（美元）
 
 
 class Config:
@@ -64,6 +66,8 @@ class Config:
                 system_prompt=model_data.get("system_prompt", ""),
                 extra_params=model_data.get("extra_params", {}),
                 enable_web_search=model_data.get("enable_web_search", True),
+                input_cost_per_1m=model_data.get("input_cost_per_1m", 0.0),
+                output_cost_per_1m=model_data.get("output_cost_per_1m", 0.0),
             )
 
         self._current_model = data.get("current_model")
@@ -106,6 +110,8 @@ class Config:
                 "system_prompt": config.system_prompt,
                 "extra_params": config.extra_params,
                 "enable_web_search": config.enable_web_search,
+                "input_cost_per_1m": config.input_cost_per_1m,
+                "output_cost_per_1m": config.output_cost_per_1m,
             }
         data = {"current_model": self._current_model, "models": models_data}
         with open(config_path, "w", encoding="utf-8") as f:

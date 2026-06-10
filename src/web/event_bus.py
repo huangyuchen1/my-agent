@@ -35,6 +35,11 @@ class EventType(str, Enum):
     # 用户交互
     USER_MESSAGE = "user_message"
 
+    # 指标统计
+    TOOL_METRICS = "tool_metrics"       # 单个工具执行指标
+    ROUND_METRICS = "round_metrics"    # 单轮模型调用指标
+    SESSION_METRICS = "session_metrics"  # 会话结束汇总
+
 
 class EventBus:
     """
